@@ -1,10 +1,10 @@
 /***
  * based on the project of: https://github.com/galbraithmedia1/Mini-Tv-ESP32
- * 
+ *
  * Changes:
- * 
+ *
  * 2024 artdanion
- * 
+ *
  */
 
 // Version for ESP32-S3 Dev Board with SD_MMC Card
@@ -169,6 +169,21 @@ void setup()
   }
   else
   {
+    listFilesByExtension(SD_MMC, "/", videoFiles, audioFiles);
+
+    debugln("Video files:");
+    for (const auto &file : videoFiles)
+    {
+      debugln(file);
+    }
+    delay(200);
+    debugln("Audio files:");
+
+    for (const auto &file : audioFiles)
+    {
+      debugln(file);
+    }
+
     bool aac_file_available = false;
     debugln("Open AAC file: " AAC_FILENAME);
 
