@@ -171,13 +171,36 @@ void setup()
   {
     listFilesByExtension(SD_MMC, "/", videoFiles, audioFiles);
 
-    debugln("Video files:");
+    uint8_t cardType = SD_MMC.cardType();
+
+    debug("SD Card Type: ");
+    if (cardType == CARD_MMC)
+    {
+      debugln("MMC");
+    }
+    else if (cardType == CARD_SD)
+    {
+      debugln("SDSC");
+    }
+    else if (cardType == CARD_SDHC)
+    {
+      debugln("SDHC");
+    }
+    else
+    {
+      debugln("UNKNOWN");
+    }
+
+    uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+    debugf("SD Card Size: %lluMB\n", cardSize);
+
+    debugln("\nVideo files:");
     for (const auto &file : videoFiles)
     {
       debugln(file);
     }
     delay(200);
-    debugln("Audio files:");
+    debugln("\nAudio files:");
 
     for (const auto &file : audioFiles)
     {
@@ -185,7 +208,7 @@ void setup()
     }
 
     bool aac_file_available = false;
-    debugln("Open AAC file: " AAC_FILENAME);
+    debugln("\nOpen AAC file: " AAC_FILENAME);
 
     File aFile = SD_MMC.open(AAC_FILENAME);
 
@@ -416,7 +439,7 @@ void showStats()
 // lists files by extension
 void listFilesByExtension(fs::FS &fs, const char *dirname, std::vector<String> &videoFiles, std::vector<String> &audioFiles)
 {
-  debugf("Listing directory: %s\n", dirname);
+  // debugf("Listing directory: %s\n", dirname);
   File root = fs.open(dirname);
   if (!root)
   {
@@ -433,15 +456,15 @@ void listFilesByExtension(fs::FS &fs, const char *dirname, std::vector<String> &
   {
     if (file.isDirectory())
     {
-      debug(" DIR : ");
-      debugln(file.name());
+      // debug(" DIR : ");
+      // debugln(file.name());
       listFilesByExtension(fs, file.path(), videoFiles, audioFiles); // Recursively call the function for subdirectories
     }
     else
     {
-      debug(file.name());
-      debug("  ");
-      debugln(file.size());
+      // debug(file.name());
+      // debug("  ");
+      // debugln(file.size());
       std::string filename = file.name();
       if (filename.find(".mjpeg") != std::string::npos)
       {
