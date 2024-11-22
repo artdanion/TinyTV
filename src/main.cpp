@@ -308,11 +308,49 @@ void setup()
       // esp_deep_sleep_start();
     }
   }
+
+  LeftButton.begin();
+  RightButton.begin();
 }
 
 void loop()
 {
   esp_task_wdt_reset(); // Reset watchdog in case of long operations
+  if (LeftButton.pressed())
+  {
+    volume_level--;
+    if (volume_level < 0)
+      volume_level = 50;
+  }
+
+  if (RightButton.pressed())
+  {
+    current_video++;
+    current_audio++;
+
+    if (current_video > videoFiles.size())
+      current_video = 0;
+    if (current_audio > audioFiles.size())
+      current_audio = 0;
+  }
+
+  if (LeftButton.released())
+  {
+    if (millis() - LeftButtonsMillis > 1000)
+    {
+      is_muted = !is_muted;
+    }
+    LeftButtonsMillis = 0;
+  }
+
+  if (RightButton.released())
+  {
+    if (millis() - RightButtonsMillis > 1000)
+    {
+      is_playing = !is_playing;
+    }
+    RightButtonsMillis = 0;
+  }
 }
 
 // pixel drawing callback
