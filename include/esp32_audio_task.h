@@ -6,7 +6,8 @@ static unsigned long total_decode_audio_ms = 0;
 static unsigned long total_play_audio_ms = 0;
 
 static i2s_port_t _i2s_num;
-static float volume_scale = 1.0f; // Volume scaling factor (1.0f means no change)
+static float volume_scale = 0.8f; // Volume scaling factor (1.0f means no change)
+TaskHandle_t TaskHandle_0;
 
 static esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
                           int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
@@ -105,7 +106,7 @@ static BaseType_t aac_player_task_start(Stream *input, BaseType_t audioAssignCor
         (const uint32_t)2000,
         (void *const)input,
         (UBaseType_t)configMAX_PRIORITIES - 1,
-        (TaskHandle_t *const)NULL,
+        (TaskHandle_t *const) &TaskHandle_0,
         (const BaseType_t)audioAssignCore);
 }
 
