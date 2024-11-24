@@ -16,15 +16,14 @@
 
 // auto fall back to MP3 if AAC file not available
 #define AAC_FILENAME "/kirk.aac"
-#define MP3_FILENAME "/360.mp3"
 #define MJPEG_FILENAME "/kirk.mjpeg"
 
 // #define AAC_FILENAME "/nacho.aac"
 // #define MJPEG_FILENAME "/nacho.mjpeg"
 
-#define AUDIOASSIGNCORE 0
+#define AUDIOASSIGNCORE 1
 #define DECODEASSIGNCORE 0
-#define DRAWASSIGNCORE 1
+#define DRAWASSIGNCORE 0
 
 #define DEBUG true
 
@@ -84,6 +83,7 @@
 #include <FFat.h>
 #include <SD_MMC.h>
 #include <vector>
+#include <map>
 #include <string>
 #include <esp_log.h>
 #include <esp_task_wdt.h> // Include watchdog control
@@ -96,11 +96,15 @@
 #include <Button.h>
 
 /* functions */
+void play();
 void showStats();
 static int drawMCU(JPEGDRAW *pDraw); // pixel drawing callback
-void listFilesByExtension(fs::FS &fs, const char *dirname, std::vector<String> &videoFiles, std::vector<String> &audioFiles);
+void scanDirectory(fs::FS &fs, String dirname, std::map<std::string, std::string> &fileMap);
+void populateVectorsFromMap(const std::map<std::string, std::string> &fileMap, std::vector<String> &videoFiles, std::vector<String> &audioFiles);
+void listFilesByExtension(fs::FS &fs, std::vector<String> &videoFiles, std::vector<String> &audioFiles);
 
 /* variables */
+bool sdcard = false;
 static int next_frame = 0;
 static int skipped_frames = 0;
 static unsigned long start_ms, curr_ms, next_frame_ms;
@@ -113,6 +117,9 @@ int volume_level = 5; // Startlautstärke
 
 unsigned long LeftButtonsMillis = 0;
 unsigned long RightButtonsMillis = 0;
+
+File aFile;
+File vFile;
 
 std::vector<String> videoFiles;
 std::vector<String> audioFiles;
@@ -163,151 +170,18 @@ void setup()
     return;
   }
 
-  if ((!SD_MMC.begin("/root", false)) && (!SD_MMC.begin("/root", false)) && (!SD_MMC.begin("/root", false)) && (!SD_MMC.begin("/root", false)))
-  {
-    debugln("ERROR: File system mount failed!");
-  }
-  else
-  {
-    listFilesByExtension(SD_MMC, "/", videoFiles, audioFiles);
+  play();
 
-    uint8_t cardType = SD_MMC.cardType();
+  delay(200);
 
-    debug("SD Card Type: ");
-    if (cardType == CARD_MMC)
-    {
-      debugln("MMC");
-    }
-    else if (cardType == CARD_SD)
-    {
-      debugln("SDSC");
-    }
-    else if (cardType == CARD_SDHC)
-    {
-      debugln("SDHC");
-    }
-    else
-    {
-      debugln("UNKNOWN");
-    }
+  showStats();
 
-    uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
-    debugf("SD Card Size: %lluMB\n", cardSize);
-
-    debugln("\nVideo files:");
-    for (const auto &file : videoFiles)
-    {
-      debugln(file);
-    }
-    delay(200);
-    debugln("\nAudio files:");
-
-    for (const auto &file : audioFiles)
-    {
-      debugln(file);
-    }
-
-    bool aac_file_available = false;
-    debugln("\nOpen AAC file: " AAC_FILENAME);
-
-    File aFile = SD_MMC.open(AAC_FILENAME);
-
-    if (aFile)
-    {
-      aac_file_available = true;
-    }
-    else
-    {
-      debugln("Open MP3 file: " MP3_FILENAME);
-      aFile = SD_MMC.open(MP3_FILENAME);
-    }
-
-    if (!aFile || aFile.isDirectory())
-    {
-      debugln("ERROR: Failed to open " AAC_FILENAME " or " MP3_FILENAME " file for reading");
-    }
-    else
-    {
-      debugln("Open MJPEG file: " MJPEG_FILENAME);
-
-      File vFile = SD_MMC.open(MJPEG_FILENAME);
-
-      if (!vFile || vFile.isDirectory())
-      {
-        debugln("ERROR: Failed to open " MJPEG_FILENAME " file for reading");
-      }
-      else
-      {
-        debugln("Init video");
-
-        mjpeg_setup(&vFile, MJPEG_BUFFER_SIZE, drawMCU,
-                    false /* useBigEndian */, DECODEASSIGNCORE, DRAWASSIGNCORE);
-
-        debugln("Start play audio task");
-
-        BaseType_t ret_val;
-        if (aac_file_available)
-        {
-          ret_val = aac_player_task_start(&aFile, AUDIOASSIGNCORE);
-        }
-        else
-        {
-          ret_val = mp3_player_task_start(&aFile, AUDIOASSIGNCORE);
-        }
-        if (ret_val != pdPASS)
-        {
-          debugf("Audio player task start failed: %d\n", ret_val);
-        }
-
-        debugln("Start play video");
-
-        start_ms = millis();
-        curr_ms = millis();
-        next_frame_ms = start_ms + (++next_frame * 1000 / FPS / 2);
-
-        while (vFile.available() && mjpeg_read_frame()) // Read video
-        {
-          total_read_video_ms += millis() - curr_ms;
-          curr_ms = millis();
-
-          if (millis() < next_frame_ms) // check show frame or skip frame
-          {
-            // Play video
-            mjpeg_draw_frame();
-            total_decode_video_ms += millis() - curr_ms;
-            curr_ms = millis();
-          }
-          else
-          {
-            ++skipped_frames;
-            // debugln("Skip frame");
-          }
-
-          while (millis() < next_frame_ms)
-          {
-            vTaskDelay(pdMS_TO_TICKS(1));
-          }
-
-          curr_ms = millis();
-          next_frame_ms = start_ms + (++next_frame * 1000 / FPS);
-        }
-        debugln("AV end");
-
-        vFile.close();
-        aFile.close();
-      }
-      delay(200);
-
-      showStats();
-
-      // delay(60000);
+// delay(60000);
 #ifdef GFX_BL
-      // digitalWrite(GFX_BL, LOW);
+// digitalWrite(GFX_BL, LOW);
 #endif
-      // gfx->displayOff();
-      // esp_deep_sleep_start();
-    }
-  }
+  // gfx->displayOff();
+  // esp_deep_sleep_start();
 
   LeftButton.begin();
   RightButton.begin();
@@ -316,14 +190,8 @@ void setup()
 void loop()
 {
   esp_task_wdt_reset(); // Reset watchdog in case of long operations
-  if (LeftButton.pressed())
-  {
-    volume_level--;
-    if (volume_level < 0)
-      volume_level = 50;
-  }
 
-  if (RightButton.pressed())
+  if (LeftButton.pressed())
   {
     current_video++;
     current_audio++;
@@ -332,6 +200,8 @@ void loop()
       current_video = 0;
     if (current_audio > audioFiles.size())
       current_audio = 0;
+
+    debugln("next Video");
   }
 
   if (LeftButton.released())
@@ -339,17 +209,13 @@ void loop()
     if (millis() - LeftButtonsMillis > 1000)
     {
       is_muted = !is_muted;
+      debugln("mute");
     }
+    if (is_muted)
+      set_volume(0.0);
+    else
+      set_volume(0.6);
     LeftButtonsMillis = 0;
-  }
-
-  if (RightButton.released())
-  {
-    if (millis() - RightButtonsMillis > 1000)
-    {
-      is_playing = !is_playing;
-    }
-    RightButtonsMillis = 0;
   }
 }
 
@@ -366,7 +232,6 @@ static int drawMCU(JPEGDRAW *pDraw)
 // shows stats
 void showStats()
 {
-
   gfx->fillScreen(BLACK);
 
   int time_used = millis() - start_ms;
@@ -375,6 +240,8 @@ void showStats()
   int played_frames = total_frames - skipped_frames;
   float fps = 1000.0 * played_frames / time_used;
   total_decode_audio_ms -= total_play_audio_ms;
+
+  debugln("Show Stats");
 
   debugf("Played frames: %d\n", played_frames);
   debugf("Skipped frames: %d (%0.1f %%)\n", skipped_frames, 100.0 * skipped_frames / total_frames);
@@ -474,46 +341,212 @@ void showStats()
   gfx->printf("Decode video: %lu ms (%0.1f %%)\n", total_decode_video_ms, 100.0 * total_decode_video_ms / time_used);
 }
 
-// lists files by extension
-void listFilesByExtension(fs::FS &fs, const char *dirname, std::vector<String> &videoFiles, std::vector<String> &audioFiles)
+void play()
 {
-  // debugf("Listing directory: %s\n", dirname);
-  File root = fs.open(dirname);
-  if (!root)
+  if ((!SD_MMC.begin("/root", false)) && (!SD_MMC.begin("/root", false)) && (!SD_MMC.begin("/root", false)) && (!SD_MMC.begin("/root", false)))
   {
-    debugln("Failed to open directory");
-    return;
+    debugln("ERROR: File system mount failed!");
   }
-  if (!root.isDirectory())
+  else
   {
-    debugln("Not a directory");
-    return;
+    sdcard = true;
+    debugln("SD Card found...");
   }
-  File file = root.openNextFile();
-  while (file)
+
+  if (sdcard)
   {
-    if (file.isDirectory())
+    listFilesByExtension(SD_MMC, videoFiles, audioFiles);
+
+    uint8_t cardType = SD_MMC.cardType();
+
+    debug("SD Card Type: ");
+    if (cardType == CARD_MMC)
     {
-      // debug(" DIR : ");
-      // debugln(file.name());
-      listFilesByExtension(fs, file.path(), videoFiles, audioFiles); // Recursively call the function for subdirectories
+      debugln("MMC");
+    }
+    else if (cardType == CARD_SD)
+    {
+      debugln("SDSC");
+    }
+    else if (cardType == CARD_SDHC)
+    {
+      debugln("SDHC");
     }
     else
     {
-      // debug(file.name());
-      // debug("  ");
-      // debugln(file.size());
-      std::string filename = file.name();
-      if (filename.find(".mjpeg") != std::string::npos)
-      {
-        videoFiles.push_back(String(filename.c_str())); // Convert to String and push to the vector
-      }
-      else if (filename.find(".aac") != std::string::npos)
-      {
-        audioFiles.push_back(String(filename.c_str())); // Convert to String and push to the vector
-      }
+      debugln("UNKNOWN");
     }
-    file = root.openNextFile();
+
+    uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+    debugf("SD Card Size: %lluMB\n", cardSize);
+
+    debugln("\nVideo files:");
+    for (const auto &file : videoFiles)
+    {
+      debugln(file);
+    }
+    delay(200);
+    debugln("\nAudio files:");
+
+    for (const auto &file : audioFiles)
+    {
+      debugln(file);
+    }
+
+    debugln("\nOpen AAC file: " + audioFiles[current_audio]);
+
+    if (audioFiles[current_audio] != "X")
+    {
+      set_volume(0.5);
+      aFile = SD_MMC.open(audioFiles[current_audio]);
+    }
+    else
+    {
+      debugln("No Sound");
+    }
+
+    debugln("Open MJPEG file: " + videoFiles[current_video]);
+
+    vFile = SD_MMC.open(videoFiles[current_video]);
+
+    if (!vFile || vFile.isDirectory())
+    {
+      debugln("ERROR: Failed to open " + videoFiles[current_video] + " file for reading");
+    }
+    else
+    {
+      debugln("Init video");
+
+      mjpeg_setup(&vFile, MJPEG_BUFFER_SIZE, drawMCU,
+                  false /* useBigEndian */, DECODEASSIGNCORE, DRAWASSIGNCORE);
+
+      debugln("Start play audio task");
+
+      BaseType_t ret_val;
+      if (audioFiles[current_audio] != "X")
+      {
+        ret_val = aac_player_task_start(&aFile, AUDIOASSIGNCORE);
+        set_volume(0.5);
+
+        if (ret_val != pdPASS)
+        {
+          debugf("Audio player task start failed: %d\n", ret_val);
+        }
+      }
+
+      debugln("Start play video");
+
+      start_ms = millis();
+      curr_ms = millis();
+      next_frame_ms = start_ms + (++next_frame * 1000 / FPS / 2);
+
+      while (vFile.available() && mjpeg_read_frame()) // Read video
+      {
+        total_read_video_ms += millis() - curr_ms;
+        curr_ms = millis();
+
+        if (millis() < next_frame_ms) // check show frame or skip frame
+        {
+          // Play video
+          mjpeg_draw_frame();
+          total_decode_video_ms += millis() - curr_ms;
+          curr_ms = millis();
+        }
+        else
+        {
+          ++skipped_frames;
+          // debugln("Skip frame");
+        }
+
+        while (millis() < next_frame_ms)
+        {
+          vTaskDelay(pdMS_TO_TICKS(1));
+        }
+
+        curr_ms = millis();
+        next_frame_ms = start_ms + (++next_frame * 1000 / FPS);
+      }
+      debugln("AV end");
+
+      vFile.close();
+      aFile.close();
+    }
   }
-  file.close();
+  else
+  {
+    debugln("NO FILES");
+  }
+}
+
+void scanDirectory(fs::FS &fs, String dirname, std::map<std::string, std::string> &fileMap)
+{
+    File root = fs.open(dirname.c_str());
+    if (!root)
+    {
+        debugln("Failed to open directory");
+        return;
+    }
+    if (!root.isDirectory())
+    {
+        debugln("Not a directory");
+        return;
+    }
+
+    File file = root.openNextFile();
+    while (file)
+    {
+        if (file.isDirectory())
+        {
+            String dir = dirname + "/" + file.name();
+            // Recursively call the function for subdirectories
+            scanDirectory(fs, dir, fileMap);
+        }
+        else
+        {
+            std::string filename = file.name();
+            std::string baseName = filename.substr(0, filename.find_last_of("."));
+
+            if (filename.find(".mjpeg") != std::string::npos)
+            {
+                // Check if the corresponding .aac file exists
+                if (fileMap.find(baseName) == fileMap.end())
+                {
+                    fileMap[baseName] = ""; // Mark the presence of .mjpeg file
+                }
+                //debugf("Found video file: %s\n", filename.c_str());
+            }
+            else if (filename.find(".aac") != std::string::npos)
+            {
+                fileMap[baseName] = filename; // Store the .aac file
+                //debugf("Found audio file: %s\n", filename.c_str());
+            }
+        }
+        file = root.openNextFile();
+    }
+    file.close();
+}
+
+void populateVectorsFromMap(const std::map<std::string, std::string> &fileMap, std::vector<String> &videoFiles, std::vector<String> &audioFiles)
+{
+    // Populate the vectors based on the map
+    for (const auto &pair : fileMap)
+    {
+        videoFiles.push_back(("/" + pair.first + ".mjpeg").c_str());
+        if (!pair.second.empty())
+        {
+            audioFiles.push_back(("/" + pair.second).c_str());
+        }
+        else
+        {
+            audioFiles.push_back("X");
+        }
+        debugf("Added video: %s, audio: %s\n", videoFiles.back().c_str(), audioFiles.back().c_str());
+    }
+}
+
+void listFilesByExtension(fs::FS &fs, std::vector<String> &videoFiles, std::vector<String> &audioFiles)
+{
+    std::map<std::string, std::string> fileMap; // Map to store filenames without extensions and their corresponding .aac files
+    scanDirectory(fs, "/", fileMap);
+    populateVectorsFromMap(fileMap, videoFiles, audioFiles);
 }
