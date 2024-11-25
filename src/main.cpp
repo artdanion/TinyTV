@@ -132,8 +132,19 @@ class Player
 public:
   Player() : vFileOpen(false), aFileOpen(false), start_ms(0), curr_ms(0), next_frame_ms(0), next_frame(0), total_read_video_ms(0), total_decode_video_ms(0), skipped_frames(0) {}
 
+  void init()
+  {
+    // Initialize SD card if not already initialized
+    if (!SD_MMC.begin()) {
+      debugln("SD Card initialization failed!");
+      return;
+    }
+    debugln("SD Card initialized.");
+  }
+
   void start(const std::string &videoFile)
   {
+    stop(); // Ensure any previous playback is stopped
 
     uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
     debugf("SD Card Size: %lluMB\n", cardSize);
@@ -225,7 +236,6 @@ public:
         next_frame_ms = start_ms + (++next_frame * 1000 / FPS);
       }
       debugln("AV end");
-      stop();
     }
   }
 
@@ -233,18 +243,19 @@ public:
   {
     if (aFileOpen)
     {
+      vTaskSuspend(TaskHandle_0);
       aFile.close();
       aFileOpen = false;
-      vTaskSuspend(TaskHandle_0);
     }
-        if (vFileOpen)
+    if (vFileOpen)
     {
-      vFile.close();
-      vFileOpen = false;
       vTaskSuspend(_decodeTask);
       vTaskSuspend(_draw_task);
+      vFile.close();
+      vFileOpen = false;
     }
     debugln("Files closed");
+    delay(1000);
   }
 
 private:
@@ -262,6 +273,7 @@ private:
 };
 
 Player player;
+
 
 void setup()
 {
@@ -345,6 +357,8 @@ void setup()
   {
     debugln("UNKNOWN");
   }
+
+  player.init();
   delay(100);
   debugln(videoFiles[current_video]);
 
@@ -372,6 +386,7 @@ void input_task(void *param)
         current_audio = 0;
 
       player.stop();
+      delay(200);
       player.start(videoFiles[current_video].c_str());
       debugln("next Video");
     }
