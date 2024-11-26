@@ -56,7 +56,7 @@ float volume_level = 0.5; // Startlautstärke
 unsigned long LeftButtonsMillis = 0;
 unsigned long RightButtonsMillis = 0;
 
-TaskHandle_t TaskHandle_1;
+TaskHandle_t inputHandle;
 
 Button LeftButton(BUTTON1);
 Button RightButton(BUTTON2);
@@ -86,7 +86,7 @@ void setup()
   RightButton.begin();
   delay(100);
 
-  xTaskCreatePinnedToCore(input_task, "Button Task", 4096, NULL, (UBaseType_t)configMAX_PRIORITIES - 1, &TaskHandle_1, INPUTASSIGNCORE);
+  xTaskCreatePinnedToCore(input_task, "Button Task", 4096, NULL, (UBaseType_t)configMAX_PRIORITIES - 1, &inputHandle, INPUTASSIGNCORE);
 
   player.init();
   delay(100);

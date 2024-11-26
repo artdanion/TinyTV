@@ -5,10 +5,10 @@
 #include <string>
 #include <map>
 #include <vector>
-/* audio */
-#include "esp32_audio_task.h"
-/* MJPEG Video */
-#include "mjpeg_decode_draw_task.h"
+#include "driver/i2s.h"
+#include "AACDecoderHelix.h"
+#include <FS.h>
+#include <JPEGDEC.h>
 #include <Arduino_GFX_Library.h>
 
 #define DEBUG true
@@ -68,33 +68,49 @@
 
 // Define the static member variables
 libhelix::AACDecoderHelix Player::_aac;
-TaskHandle_t Player::TaskHandle_0 = NULL;
 
 std::vector<String> videoFiles;
 std::vector<String> audioFiles;
 
-int current_video=0;
-int current_audio=0;
+int current_video = 0;
+int current_audio = 0;
 
-JPEGDEC Player::_jpegDec;
-xQueueHandle Player::_xqh = NULL;
-bool Player::_useBigEndian = false;
-Stream *Player::_input = NULL;
-int32_t Player::_mjpegBufSize = 0;
-uint8_t *Player::_read_buf = NULL;
-int32_t Player::_mjpeg_buf_offset = 0;
-TaskHandle_t Player::_decodeTask = NULL;
-TaskHandle_t Player::_draw_task = NULL;
-paramDecodeTask Player::_pDecodeTask;
-paramDrawTask Player::_pDrawTask;
-uint8_t *Player::_mjpeg_buf = NULL;
-uint8_t Player::_mBufIdx = 0;
-int32_t Player::_inputindex = 0;
-int32_t Player::_buf_read = 0;
-int32_t Player::_remain = 0;
-mjpegBuf Player::_mjpegBufs[NUMBER_OF_DECODE_BUFFER];
-JPEGDRAW Player::jpegdraws[NUMBER_OF_DRAW_BUFFER];
-int Player::_draw_queue_cnt = 0;
+/* video task*/
+int _draw_queue_cnt = 0;
+JPEGDEC _jpegDec;
+xQueueHandle _xqh;
+bool _useBigEndian;
+
+JPEGDRAW jpegdraws[NUMBER_OF_DRAW_BUFFER];
+unsigned long total_read_video_ms = 0;
+unsigned long total_decode_video_ms = 0;
+unsigned long total_show_video_ms = 0;
+
+Stream *_input;
+int32_t _mjpegBufSize;
+uint8_t *_read_buf;
+int32_t _mjpeg_buf_offset = 0;
+
+TaskHandle_t _decodeTask;
+TaskHandle_t _drawTask;
+paramDecodeTask _pDecodeTask;
+paramDrawTask _pDrawTask;
+uint8_t *_mjpeg_buf;
+uint8_t _mBufIdx = 0;
+
+int32_t _inputindex = 0;
+int32_t _buf_read;
+int32_t _remain = 0;
+mjpegBuf _mjpegBufs[NUMBER_OF_DECODE_BUFFER];
+
+/* audio task*/
+TaskHandle_t _audioTask = NULL;
+static unsigned long total_read_audio_ms = 0;
+static unsigned long total_decode_audio_ms = 0;
+static unsigned long total_play_audio_ms = 0;
+
+static i2s_port_t _i2s_num;
+float volume_scale = 0.8f; // Volume scaling factor (1.0f means no change)
 
 /* variables */
 bool sdcard = false;
@@ -180,7 +196,7 @@ void Player::start(const std::string &videoFile)
     debugln("No Sound");
   }
 
-  debugln("Open MJPEG File: "+ videoFiles[current_video]);
+  debugln("Open MJPEG File: " + videoFiles[current_video]);
 
   vFile = SD_MMC.open(videoFiles[current_video]);
   vFileOpen = true;
@@ -254,10 +270,10 @@ void Player::stop()
   delay(20);
 
   // Delete the AAC player task
-  if (TaskHandle_0 != NULL)
+  if (_audioTask != NULL)
   {
-    vTaskDelete(TaskHandle_0);
-    TaskHandle_0 = NULL;
+    vTaskDelete(_audioTask);
+    _audioTask = NULL;
   }
 
   // Close the audio file
@@ -275,10 +291,10 @@ void Player::stop()
   }
 
   // Delete the draw task
-  if (_draw_task != NULL)
+  if (_drawTask != NULL)
   {
-    vTaskDelete(_draw_task);
-    _draw_task = NULL;
+    vTaskDelete(_drawTask);
+    _drawTask = NULL;
   }
 
   // Close the video file
@@ -357,7 +373,7 @@ void Player::debug_memory_usage()
 // Function to set the volume
 void Player::set_volume(float volume)
 {
-  //volume_scale = volume;
+  // volume_scale = volume;
 }
 
 // pixel drawing callback
@@ -370,6 +386,365 @@ static int drawMCU(JPEGDRAW *pDraw)
   return 1;
 } /* drawMCU() */
 
+// ----------- Decode and Draw Task
+static int queueDrawMCU(JPEGDRAW *pDraw)
+{
+  int len = pDraw->iWidth * pDraw->iHeight * 2;
+  JPEGDRAW *j = &jpegdraws[_draw_queue_cnt % NUMBER_OF_DRAW_BUFFER];
+  j->x = pDraw->x;
+  j->y = pDraw->y;
+  j->iWidth = pDraw->iWidth;
+  j->iHeight = pDraw->iHeight;
+  memcpy(j->pPixels, pDraw->pPixels, len);
+
+  // log_i("queueDrawMCU start.");
+  ++_draw_queue_cnt;
+  xQueueSend(_xqh, &j, portMAX_DELAY);
+  // log_i("queueDrawMCU end.");
+
+  return 1;
+}
+
+static void decode_task(void *arg)
+{
+  paramDecodeTask *p = (paramDecodeTask *)arg;
+  mjpegBuf *mBuf;
+  log_i("decode_task start.");
+  while (xQueueReceive(p->xqh, &mBuf, portMAX_DELAY))
+  {
+    // log_i("mBuf->size: %d", mBuf->size);
+    // log_i("mBuf->buf start: %X %X, end: %X, %X.", mBuf->buf[0], mBuf->buf[1], mBuf->buf[mBuf->size - 2], mBuf->buf[mBuf->size - 1]);
+    unsigned long s = millis();
+
+    _jpegDec.openRAM(mBuf->buf, mBuf->size, p->drawFunc);
+
+    // _jpegDec.setMaxOutputSize(MAXOUTPUTSIZE);
+    if (_useBigEndian)
+    {
+      _jpegDec.setPixelType(RGB565_BIG_ENDIAN);
+    }
+    _jpegDec.setMaxOutputSize(MAXOUTPUTSIZE);
+    _jpegDec.decode(0, 0, 0);
+    _jpegDec.close();
+
+    total_decode_video_ms += millis() - s;
+  }
+  vQueueDelete(p->xqh);
+  log_i("decode_task end.");
+  vTaskDelete(NULL);
+}
+
+static void draw_task(void *arg)
+{
+  paramDrawTask *p = (paramDrawTask *)arg;
+  JPEGDRAW *pDraw;
+  log_i("draw_task start.");
+  while (xQueueReceive(p->xqh, &pDraw, portMAX_DELAY))
+  {
+    // log_i("draw_task work start: x: %d, y: %d, iWidth: %d, iHeight: %d.", pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight);
+    p->drawFunc(pDraw);
+    // log_i("draw_task work end.");
+  }
+  vQueueDelete(p->xqh);
+  log_i("draw_task end.");
+  vTaskDelete(NULL);
+}
+
+bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDraw,
+                 bool useBigEndian, BaseType_t decodeAssignCore, BaseType_t drawAssignCore)
+{
+  _input = input;
+  _mjpegBufSize = mjpegBufSize;
+  _useBigEndian = useBigEndian;
+
+  for (int i = 0; i < NUMBER_OF_DECODE_BUFFER; ++i)
+  {
+    _mjpegBufs[i].buf = (uint8_t *)malloc(mjpegBufSize);
+    if (_mjpegBufs[i].buf)
+    {
+      log_i("#%d decode buffer allocated.", i);
+    }
+    else
+    {
+      log_e("#%d decode buffer allocat failed.", i);
+    }
+  }
+  _mjpeg_buf = _mjpegBufs[_mBufIdx].buf;
+
+  if (!_read_buf)
+  {
+    _read_buf = (uint8_t *)malloc(READ_BUFFER_SIZE);
+  }
+  if (_read_buf)
+  {
+    log_i("Read buffer allocated.");
+  }
+
+  _xqh = xQueueCreate(NUMBER_OF_DRAW_BUFFER, sizeof(JPEGDRAW));
+  _pDrawTask.xqh = _xqh;
+  _pDrawTask.drawFunc = pfnDraw;
+  _pDecodeTask.xqh = xQueueCreate(NUMBER_OF_DECODE_BUFFER, sizeof(mjpegBuf));
+  _pDecodeTask.drawFunc = queueDrawMCU;
+
+  xTaskCreatePinnedToCore(
+      (TaskFunction_t)decode_task,
+      (const char *const)"MJPEG decode Task",
+      (const uint32_t)2000,
+      (void *const)&_pDecodeTask,
+      (UBaseType_t)configMAX_PRIORITIES - 1,
+      (TaskHandle_t *const)&_decodeTask,
+      (const BaseType_t)decodeAssignCore);
+  xTaskCreatePinnedToCore(
+      (TaskFunction_t)draw_task,
+      (const char *const)"MJPEG Draw Task",
+      (const uint32_t)2000,
+      (void *const)&_pDrawTask,
+      (UBaseType_t)configMAX_PRIORITIES - 1,
+      (TaskHandle_t *const)&_drawTask,
+      (const BaseType_t)drawAssignCore);
+
+  for (int i = 0; i < NUMBER_OF_DRAW_BUFFER; i++)
+  {
+    if (!jpegdraws[i].pPixels)
+    {
+      jpegdraws[i].pPixels = (uint16_t *)heap_caps_malloc(MAXOUTPUTSIZE * 16 * 16 * 2, MALLOC_CAP_DMA);
+    }
+    if (jpegdraws[i].pPixels)
+    {
+      log_i("#%d draw buffer allocated.", i);
+    }
+    else
+    {
+      log_e("#%d draw buffer allocat failed.", i);
+    }
+  }
+
+  return true;
+}
+
+bool mjpeg_read_frame()
+{
+  if (_inputindex == 0)
+  {
+    _buf_read = _input->readBytes(_read_buf, READ_BUFFER_SIZE);
+    _inputindex += _buf_read;
+  }
+  _mjpeg_buf_offset = 0;
+  int i = 0;
+  bool found_FFD8 = false;
+  while ((_buf_read > 0) && (!found_FFD8))
+  {
+    i = 0;
+    while ((i < _buf_read) && (!found_FFD8))
+    {
+      if ((_read_buf[i] == 0xFF) && (_read_buf[i + 1] == 0xD8)) // JPEG header
+      {
+        // log_i("Found FFD8 at: %d.", i);
+        found_FFD8 = true;
+      }
+      ++i;
+    }
+    if (found_FFD8)
+    {
+      --i;
+    }
+    else
+    {
+      _buf_read = _input->readBytes(_read_buf, READ_BUFFER_SIZE);
+    }
+  }
+  uint8_t *_p = _read_buf + i;
+  _buf_read -= i;
+  bool found_FFD9 = false;
+  if (_buf_read > 0)
+  {
+    i = 3;
+    while ((_buf_read > 0) && (!found_FFD9))
+    {
+      if ((_mjpeg_buf_offset > 0) && (_mjpeg_buf[_mjpeg_buf_offset - 1] == 0xFF) && (_p[0] == 0xD9)) // JPEG trailer
+      {
+        found_FFD9 = true;
+      }
+      else
+      {
+        while ((i < _buf_read) && (!found_FFD9))
+        {
+          if ((_p[i] == 0xFF) && (_p[i + 1] == 0xD9)) // JPEG trailer
+          {
+            found_FFD9 = true;
+            ++i;
+          }
+          ++i;
+        }
+      }
+
+      // log_i("i: %d", i);
+      memcpy(_mjpeg_buf + _mjpeg_buf_offset, _p, i);
+      _mjpeg_buf_offset += i;
+      int32_t o = _buf_read - i;
+      if (o > 0)
+      {
+        // log_i("o: %d", o);
+        memcpy(_read_buf, _p + i, o);
+        _buf_read = _input->readBytes(_read_buf + o, READ_BUFFER_SIZE - o);
+        _p = _read_buf;
+        _inputindex += _buf_read;
+        _buf_read += o;
+        // log_i("_buf_read: %d", _buf_read);
+      }
+      else
+      {
+        _buf_read = _input->readBytes(_read_buf, READ_BUFFER_SIZE);
+        _p = _read_buf;
+        _inputindex += _buf_read;
+      }
+      i = 0;
+    }
+    if (found_FFD9)
+    {
+      // log_i("Found FFD9 at: %d.", _mjpeg_buf_offset);
+      if (_mjpeg_buf_offset > _mjpegBufSize) {
+        log_e("_mjpeg_buf_offset(%d) > _mjpegBufSize (%d)", _mjpeg_buf_offset, _mjpegBufSize);
+      }
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool mjpeg_draw_frame()
+{
+  mjpegBuf *mBuf = &_mjpegBufs[_mBufIdx];
+  mBuf->size = _mjpeg_buf_offset;
+  // log_i("_mjpegBufs[%d].size: %d.", _mBufIdx, _mjpegBufs[_mBufIdx].size);
+  // log_i("_mjpegBufs[%d].buf start: %X %X, end: %X, %X.", _mjpegBufs, _mjpegBufs[_mBufId].buf[0], _mjpegBufs[_mBufIdx].buf[1], _mjpegBufs[_mBufIdx].buf[_mjpeg_buf_offset - 2], _mjpegBufs[_mBufIdx].buf[_mjpeg_buf_offset - 1]);
+  xQueueSend(_pDecodeTask.xqh, &mBuf, portMAX_DELAY);
+  ++_mBufIdx;
+  if (_mBufIdx >= NUMBER_OF_DECODE_BUFFER)
+  {
+    _mBufIdx = 0;
+  }
+  _mjpeg_buf = _mjpegBufs[_mBufIdx].buf;
+  // log_i("queue decode_task end");
+
+  return true;
+}
+
+// ------------audio task
+static esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
+                          int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
+                          int bck_io_num,   /*!< BCK in out pin*/
+                          int ws_io_num,    /*!< WS in out pin*/
+                          int data_out_num, /*!< DATA out pin*/
+                          int data_in_num   /*!< DATA in pin*/
+)
+{
+    _i2s_num = i2s_num;
+
+    esp_err_t ret_val = ESP_OK;
+
+    i2s_config_t i2s_config;
+    i2s_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
+    i2s_config.sample_rate = sample_rate;
+    i2s_config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
+    i2s_config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
+    i2s_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+    i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+    i2s_config.dma_buf_count = 8;
+    i2s_config.dma_buf_len = 160;
+    i2s_config.use_apll = false;
+    i2s_config.tx_desc_auto_clear = true;
+    i2s_config.fixed_mclk = 0;
+    i2s_config.bits_per_chan = I2S_BITS_PER_CHAN_16BIT;
+
+    i2s_pin_config_t pin_config;
+    pin_config.mck_io_num = mck_io_num;
+    pin_config.bck_io_num = bck_io_num;
+    pin_config.ws_io_num = ws_io_num;
+    pin_config.data_out_num = data_out_num;
+    pin_config.data_in_num = data_in_num;
+
+    ret_val |= i2s_driver_install(i2s_num, &i2s_config, 0, NULL);
+    if (ret_val != ESP_OK)
+    {
+        debugf("i2s_driver_install failed: %d\n", ret_val);
+        return ret_val;
+    }
+
+    ret_val |= i2s_set_pin(i2s_num, &pin_config);
+    if (ret_val != ESP_OK)
+    {
+        debugf("i2s_set_pin failed: %d\n", ret_val);
+        return ret_val;
+    }
+
+    debugln("I2S initialized successfully");
+    return ESP_OK;
+}
+
+static int _samprate = 0;
+void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len)
+{
+    unsigned long s = millis();
+    if (_samprate != info.sampRateOut)
+    {
+        i2s_set_clk(_i2s_num, info.sampRateOut /* sample_rate */, info.bitsPerSample /* bits_cfg */, (info.nChans == 2) ? I2S_CHANNEL_STEREO : I2S_CHANNEL_MONO /* channel */);
+        _samprate = info.sampRateOut;
+    }
+
+    // Apply volume scaling
+    for (size_t i = 0; i < len; i++)
+    {
+        pwm_buffer[i] = static_cast<int16_t>(pwm_buffer[i] *volume_scale);
+    }
+
+    size_t i2s_bytes_written = 0;
+    i2s_write(_i2s_num, pwm_buffer, len * 2, &i2s_bytes_written, portMAX_DELAY);
+    total_play_audio_ms += millis() - s;
+}
+
+static uint8_t _frame[3200]; // MP3_MAX_FRAME_SIZE is smaller, so always use MP3_MAX_FRAME_SIZE
+
+static void aac_player_task(void *pvParam)
+{
+    Stream *input = (Stream *)pvParam;
+
+    int r, w;
+    unsigned long ms = millis();
+    while (r = input->readBytes(_frame, 3200))
+    {
+        total_read_audio_ms += millis() - ms;
+        ms = millis();
+
+        while (r > 0)
+        {
+            w = _aac.write(_frame, r);
+            r -= w;
+        }
+        total_decode_audio_ms += millis() - ms;
+        ms = millis();
+    }
+    debugln("AAC stop.");
+
+    vTaskDelete(NULL);
+}
+
+static BaseType_t aac_player_task_start(Stream *input, BaseType_t audioAssignCore)
+{
+    _aac.begin();
+
+    return xTaskCreatePinnedToCore(
+        (TaskFunction_t)aac_player_task,
+        (const char *const)"AAC Player Task",
+        (const uint32_t)2000,
+        (void *const)input,
+        (UBaseType_t)configMAX_PRIORITIES - 1,
+        (TaskHandle_t *const) &_audioTask,
+        (const BaseType_t)audioAssignCore);
+}
+
+// scan SD Card and fill file vectors
 void getFiles()
 {
   if (!SD_MMC.begin("/root", false))

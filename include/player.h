@@ -28,6 +28,7 @@ extern std::vector<String> audioFiles;
 extern int current_video;
 extern int current_audio;
 
+
 typedef struct
 {
   int32_t size;
@@ -72,28 +73,29 @@ private:
   void debug_memory_usage();
 
   static libhelix::AACDecoderHelix _aac;
-  static i2s_port_t _i2s_num;
-  static TaskHandle_t TaskHandle_0;
-
-  static JPEGDEC _jpegDec;
-  static xQueueHandle _xqh;
-  static bool _useBigEndian;
-  static Stream *_input;
-  static int32_t _mjpegBufSize;
-  static uint8_t *_read_buf;
-  static int32_t _mjpeg_buf_offset;
-  static TaskHandle_t _decodeTask;
-  static TaskHandle_t _draw_task;
-  static paramDecodeTask _pDecodeTask;
-  static paramDrawTask _pDrawTask;
-  static uint8_t *_mjpeg_buf;
-  static uint8_t _mBufIdx;
-  static int32_t _inputindex;
-  static int32_t _buf_read;
-  static int32_t _remain;
-  static mjpegBuf _mjpegBufs[NUMBER_OF_DECODE_BUFFER];
-  static JPEGDRAW jpegdraws[NUMBER_OF_DRAW_BUFFER];
-  static int _draw_queue_cnt;
 };
+
+// decode and draw task
+static int queueDrawMCU(JPEGDRAW *pDraw);
+static void decode_task(void *arg);
+static void draw_task(void *arg);
+bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDraw,
+                 bool useBigEndian, BaseType_t decodeAssignCore, BaseType_t drawAssignCore);
+bool mjpeg_read_frame();
+bool mjpeg_draw_frame();
+
+// audio task
+static esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
+                          int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
+                          int bck_io_num,   /*!< BCK in out pin*/
+                          int ws_io_num,    /*!< WS in out pin*/
+                          int data_out_num, /*!< DATA out pin*/
+                          int data_in_num   /*!< DATA in pin*/
+);
+
+void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len);
+static libhelix::AACDecoderHelix _aac(aacAudioDataCallback);
+static void aac_player_task(void *pvParam);
+static BaseType_t aac_player_task_start(Stream *input, BaseType_t audioAssignCore);
 
 #endif
