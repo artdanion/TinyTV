@@ -1,13 +1,25 @@
 #include "driver/i2s.h"
 #include "AACDecoderHelix.h"
 
+#define DEBUG true
+
+#if DEBUG == true
+#define debug(x) Serial.print(x)
+#define debugf(...) Serial.printf(__VA_ARGS__)
+#define debugln(x) Serial.println(x)
+#else
+#define debug(x)
+#define debugf(...)
+#define debugln(x)
+#endif
+
 static unsigned long total_read_audio_ms = 0;
 static unsigned long total_decode_audio_ms = 0;
 static unsigned long total_play_audio_ms = 0;
 
 static i2s_port_t _i2s_num;
-static float volume_scale = 0.8f; // Volume scaling factor (1.0f means no change)
-TaskHandle_t TaskHandle_0;
+float volume_scale = 0.8f; // Volume scaling factor (1.0f means no change)
+TaskHandle_t TaskHandle_0 = NULL;
 
 static esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
                           int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
@@ -43,9 +55,21 @@ static esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
     pin_config.data_in_num = data_in_num;
 
     ret_val |= i2s_driver_install(i2s_num, &i2s_config, 0, NULL);
-    ret_val |= i2s_set_pin(i2s_num, &pin_config);
+    if (ret_val != ESP_OK)
+    {
+        debugf("i2s_driver_install failed: %d\n", ret_val);
+        return ret_val;
+    }
 
-    return ret_val;
+    ret_val |= i2s_set_pin(i2s_num, &pin_config);
+    if (ret_val != ESP_OK)
+    {
+        debugf("i2s_set_pin failed: %d\n", ret_val);
+        return ret_val;
+    }
+
+    debugln("I2S initialized successfully");
+    return ESP_OK;
 }
 
 static int _samprate = 0;
@@ -61,7 +85,7 @@ static void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t
     // Apply volume scaling
     for (size_t i = 0; i < len; i++)
     {
-        pwm_buffer[i] = static_cast<int16_t>(pwm_buffer[i] * volume_scale);
+        pwm_buffer[i] = static_cast<int16_t>(pwm_buffer[i] *volume_scale);
     }
 
     size_t i2s_bytes_written = 0;
@@ -91,7 +115,7 @@ static void aac_player_task(void *pvParam)
         total_decode_audio_ms += millis() - ms;
         ms = millis();
     }
-    log_i("AAC stop.");
+    debugln("AAC stop.");
 
     vTaskDelete(NULL);
 }
@@ -108,10 +132,4 @@ static BaseType_t aac_player_task_start(Stream *input, BaseType_t audioAssignCor
         (UBaseType_t)configMAX_PRIORITIES - 1,
         (TaskHandle_t *const) &TaskHandle_0,
         (const BaseType_t)audioAssignCore);
-}
-
-// Function to set the volume
-void set_volume(float volume)
-{
-    volume_scale = volume;
 }

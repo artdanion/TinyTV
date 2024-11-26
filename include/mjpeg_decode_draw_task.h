@@ -6,25 +6,6 @@
 #include <FS.h>
 #include <JPEGDEC.h>
 
-typedef struct
-{
-  int32_t size;
-  uint8_t *buf;
-} mjpegBuf;
-
-typedef struct
-{
-  xQueueHandle xqh;
-  JPEG_DRAW_CALLBACK *drawFunc;
-} paramDrawTask;
-
-typedef struct
-{
-  xQueueHandle xqh;
-  mjpegBuf *mBuf;
-  JPEG_DRAW_CALLBACK *drawFunc;
-} paramDecodeTask;
-
 static JPEGDRAW jpegdraws[NUMBER_OF_DRAW_BUFFER];
 static int _draw_queue_cnt = 0;
 static JPEGDEC _jpegDec;
