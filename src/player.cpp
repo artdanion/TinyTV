@@ -12,7 +12,6 @@
 #include <JPEGDEC.h>
 #include <Arduino_GFX_Library.h>
 
-
 // Define the static member variables
 libhelix::AACDecoderHelix Player::_aac;
 
@@ -86,12 +85,13 @@ void Player::init()
   // Init Display
   bus = new Arduino_ESP32SPIDMA(GFX_DC, GFX_CS, GFX_SCK, GFX_MOSI, GFX_NOT_DEFINED, HSPI, false);
   gfx = new Arduino_ST7789(bus, GFX_RST, 1 /* rotation */, true /* IPS */, 240 /* width */, 288 /* height */, 0 /* col offset 1 */, 20 /* row offset 1 */, 0 /* col offset 2 */, 12 /* row offset 2 */);
+
   gfx->begin(80000000);
   gfx->fillScreen(BLACK);
 
   debugln("Init I2S");
 
-  esp_err_t ret_val = i2s_init(I2S_NUM_0, 44100, I2S_MCLK /* MCLK */, I2S_SCLK /* SCLK */, I2S_LRCK /* LRCK */, I2S_DOUT /* DOUT */, -1 /* DIN */);
+  esp_err_t ret_val = i2s_init(I2S_NUM_0, 44100, I2S_MCLK /* MCLK */, I2S_SCLK /* SCLK */, I2S_LRCK /* LRCK */, I2S_DOUT /* DOUT */, I2S_DIN /* DIN */);
 
   if (ret_val != ESP_OK)
   {
@@ -134,7 +134,6 @@ void Player::start(const std::string &videoFile)
 
   if (audioFiles[current_audio] != "X")
   {
-    set_volume(0.5);
     aFile = SD_MMC.open(audioFiles[current_audio].c_str());
     aFileOpen = true;
   }
@@ -161,7 +160,7 @@ void Player::start(const std::string &videoFile)
     debugln("Start play audio task");
 
     BaseType_t ret_val;
-    if (audioFiles[current_audio] != "X")
+    if (aFileOpen)
     {
       ret_val = aac_player_task_start(&aFile, AUDIOASSIGNCORE);
       set_volume(0.5);
@@ -205,6 +204,7 @@ void Player::start(const std::string &videoFile)
       next_frame_ms = start_ms + (++next_frame * 1000 / FPS);
     }
     debugln("AV end");
+    showStats();
   }
 }
 
@@ -550,7 +550,8 @@ bool mjpeg_read_frame()
     if (found_FFD9)
     {
       // log_i("Found FFD9 at: %d.", _mjpeg_buf_offset);
-      if (_mjpeg_buf_offset > _mjpegBufSize) {
+      if (_mjpeg_buf_offset > _mjpegBufSize)
+      {
         log_e("_mjpeg_buf_offset(%d) > _mjpegBufSize (%d)", _mjpeg_buf_offset, _mjpegBufSize);
       }
       return true;
@@ -587,108 +588,108 @@ static esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
                           int data_in_num   /*!< DATA in pin*/
 )
 {
-    _i2s_num = i2s_num;
+  _i2s_num = i2s_num;
 
-    esp_err_t ret_val = ESP_OK;
+  esp_err_t ret_val = ESP_OK;
 
-    i2s_config_t i2s_config;
-    i2s_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
-    i2s_config.sample_rate = sample_rate;
-    i2s_config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
-    i2s_config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
-    i2s_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
-    i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
-    i2s_config.dma_buf_count = 8;
-    i2s_config.dma_buf_len = 160;
-    i2s_config.use_apll = false;
-    i2s_config.tx_desc_auto_clear = true;
-    i2s_config.fixed_mclk = 0;
-    i2s_config.bits_per_chan = I2S_BITS_PER_CHAN_16BIT;
+  i2s_config_t i2s_config;
+  i2s_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
+  i2s_config.sample_rate = sample_rate;
+  i2s_config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
+  i2s_config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
+  i2s_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+  i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+  i2s_config.dma_buf_count = 8;
+  i2s_config.dma_buf_len = 160;
+  i2s_config.use_apll = false;
+  i2s_config.tx_desc_auto_clear = true;
+  i2s_config.fixed_mclk = 0;
+  i2s_config.bits_per_chan = I2S_BITS_PER_CHAN_16BIT;
 
-    i2s_pin_config_t pin_config;
-    pin_config.mck_io_num = mck_io_num;
-    pin_config.bck_io_num = bck_io_num;
-    pin_config.ws_io_num = ws_io_num;
-    pin_config.data_out_num = data_out_num;
-    pin_config.data_in_num = data_in_num;
+  i2s_pin_config_t pin_config;
+  pin_config.mck_io_num = mck_io_num;
+  pin_config.bck_io_num = bck_io_num;
+  pin_config.ws_io_num = ws_io_num;
+  pin_config.data_out_num = data_out_num;
+  pin_config.data_in_num = data_in_num;
 
-    ret_val |= i2s_driver_install(i2s_num, &i2s_config, 0, NULL);
-    if (ret_val != ESP_OK)
-    {
-        debugf("i2s_driver_install failed: %d\n", ret_val);
-        return ret_val;
-    }
+  ret_val |= i2s_driver_install(i2s_num, &i2s_config, 0, NULL);
+  if (ret_val != ESP_OK)
+  {
+    debugf("i2s_driver_install failed: %d\n", ret_val);
+    return ret_val;
+  }
 
-    ret_val |= i2s_set_pin(i2s_num, &pin_config);
-    if (ret_val != ESP_OK)
-    {
-        debugf("i2s_set_pin failed: %d\n", ret_val);
-        return ret_val;
-    }
+  ret_val |= i2s_set_pin(i2s_num, &pin_config);
+  if (ret_val != ESP_OK)
+  {
+    debugf("i2s_set_pin failed: %d\n", ret_val);
+    return ret_val;
+  }
 
-    debugln("I2S initialized successfully");
-    return ESP_OK;
+  debugln("I2S initialized successfully");
+  return ESP_OK;
 }
 
 static int _samprate = 0;
 void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len)
 {
-    unsigned long s = millis();
-    if (_samprate != info.sampRateOut)
-    {
-        i2s_set_clk(_i2s_num, info.sampRateOut /* sample_rate */, info.bitsPerSample /* bits_cfg */, (info.nChans == 2) ? I2S_CHANNEL_STEREO : I2S_CHANNEL_MONO /* channel */);
-        _samprate = info.sampRateOut;
-    }
+  unsigned long s = millis();
+  if (_samprate != info.sampRateOut)
+  {
+    i2s_set_clk(_i2s_num, info.sampRateOut /* sample_rate */, info.bitsPerSample /* bits_cfg */, (info.nChans == 2) ? I2S_CHANNEL_STEREO : I2S_CHANNEL_MONO /* channel */);
+    _samprate = info.sampRateOut;
+  }
 
-    // Apply volume scaling
-    for (size_t i = 0; i < len; i++)
-    {
-        pwm_buffer[i] = static_cast<int16_t>(pwm_buffer[i] *volume_scale);
-    }
+  // Apply volume scaling
+  for (size_t i = 0; i < len; i++)
+  {
+    pwm_buffer[i] = static_cast<int16_t>(pwm_buffer[i] * volume_scale);
+  }
 
-    size_t i2s_bytes_written = 0;
-    i2s_write(_i2s_num, pwm_buffer, len * 2, &i2s_bytes_written, portMAX_DELAY);
-    total_play_audio_ms += millis() - s;
+  size_t i2s_bytes_written = 0;
+  i2s_write(_i2s_num, pwm_buffer, len * 2, &i2s_bytes_written, portMAX_DELAY);
+  total_play_audio_ms += millis() - s;
 }
 
 static uint8_t _frame[3200]; // MP3_MAX_FRAME_SIZE is smaller, so always use MP3_MAX_FRAME_SIZE
 
 static void aac_player_task(void *pvParam)
 {
-    Stream *input = (Stream *)pvParam;
+  Stream *input = (Stream *)pvParam;
 
-    int r, w;
-    unsigned long ms = millis();
-    while (r = input->readBytes(_frame, 3200))
+  int r, w;
+  unsigned long ms = millis();
+  while (r = input->readBytes(_frame, 3200))
+  {
+    total_read_audio_ms += millis() - ms;
+    ms = millis();
+
+    while (r > 0)
     {
-        total_read_audio_ms += millis() - ms;
-        ms = millis();
-
-        while (r > 0)
-        {
-            w = _aac.write(_frame, r);
-            r -= w;
-        }
-        total_decode_audio_ms += millis() - ms;
-        ms = millis();
+      w = _aac.write(_frame, r);
+      r -= w;
     }
-    debugln("AAC stop.");
+    total_decode_audio_ms += millis() - ms;
+    ms = millis();
+  }
+  debugln("AAC stop.");
 
-    vTaskDelete(NULL);
+  vTaskDelete(NULL);
 }
 
 static BaseType_t aac_player_task_start(Stream *input, BaseType_t audioAssignCore)
 {
-    _aac.begin();
+  _aac.begin();
 
-    return xTaskCreatePinnedToCore(
-        (TaskFunction_t)aac_player_task,
-        (const char *const)"AAC Player Task",
-        (const uint32_t)2000,
-        (void *const)input,
-        (UBaseType_t)configMAX_PRIORITIES - 1,
-        (TaskHandle_t *const) &_audioTask,
-        (const BaseType_t)audioAssignCore);
+  return xTaskCreatePinnedToCore(
+      (TaskFunction_t)aac_player_task,
+      (const char *const)"AAC Player Task",
+      (const uint32_t)2000,
+      (void *const)input,
+      (UBaseType_t)configMAX_PRIORITIES - 1,
+      (TaskHandle_t *const)&_audioTask,
+      (const BaseType_t)audioAssignCore);
 }
 
 // scan SD Card and fill file vectors

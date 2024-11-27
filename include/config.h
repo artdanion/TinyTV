@@ -61,6 +61,7 @@
 #define I2S_SCLK 8 // 5
 #define I2S_LRCK 9 // 6
 #define I2S_DOUT 7 // 4
+#define I2S_DIN -1
 
 #define CHART_MARGIN 64
 #define LEGEND_A_COLOR 0x1BB6
