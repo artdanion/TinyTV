@@ -85,7 +85,7 @@ bool mjpeg_read_frame();
 bool mjpeg_draw_frame();
 
 // audio task
-static esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
+esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
                           int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
                           int bck_io_num,   /*!< BCK in out pin*/
                           int ws_io_num,    /*!< WS in out pin*/

@@ -64,6 +64,16 @@ void setup()
   digitalWrite(GFX_BL, HIGH);
 #endif
 
+ debugln("Init I2S");
+
+  esp_err_t ret_val = i2s_init(I2S_NUM_0, 44100, I2S_MCLK /* MCLK */, I2S_SCLK /* SCLK */, I2S_LRCK /* LRCK */, I2S_DOUT /* DOUT */, -1 /* DIN */);
+
+  if (ret_val != ESP_OK)
+  {
+    debugf("i2s_init failed: %d\n", ret_val);
+  }
+  i2s_zero_dma_buffer(I2S_NUM_0);
+
   LeftButton.begin();
   RightButton.begin();
   delay(100);
@@ -73,8 +83,8 @@ void setup()
   player.init();
   delay(100);
   
-  current_video++;
-  current_audio++;
+  // current_video++;
+  // current_audio++;
   
   player.start(videoFiles[current_video].c_str());
   //player.set_volume(volume_level);

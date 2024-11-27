@@ -89,16 +89,16 @@ void Player::init()
   gfx->begin(80000000);
   gfx->fillScreen(BLACK);
 
-  debugln("Init I2S");
+  // debugln("Init I2S");
 
-  esp_err_t ret_val = i2s_init(I2S_NUM_0, 44100, I2S_MCLK /* MCLK */, I2S_SCLK /* SCLK */, I2S_LRCK /* LRCK */, I2S_DOUT /* DOUT */, I2S_DIN /* DIN */);
+  // esp_err_t ret_val = i2s_init(I2S_NUM_0, 44100, I2S_MCLK /* MCLK */, I2S_SCLK /* SCLK */, I2S_LRCK /* LRCK */, I2S_DOUT /* DOUT */, I2S_DIN /* DIN */);
 
-  if (ret_val != ESP_OK)
-  {
-    debugf("i2s_init failed: %d\n", ret_val);
-    return;
-  }
-  i2s_zero_dma_buffer(I2S_NUM_0);
+  // if (ret_val != ESP_OK)
+  // {
+  //   debugf("i2s_init failed: %d\n", ret_val);
+  //   return;
+  // }
+  // i2s_zero_dma_buffer(I2S_NUM_0);
 
   if (!SD_MMC.begin())
   {
@@ -580,7 +580,7 @@ bool mjpeg_draw_frame()
 }
 
 // ------------audio task
-static esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
+esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
                           int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
                           int bck_io_num,   /*!< BCK in out pin*/
                           int ws_io_num,    /*!< WS in out pin*/
