@@ -14,26 +14,7 @@
 // ffmpeg -i  office1.mp4 -ar 44100 -ac 1 -ab 24k -filter:a loudnorm -filter:a "volume=-5dB" office1.aac
 // ffmpeg -i office1.mp4 -vf "fps=25,scale=-1:240:flags=lanczos,crop=288:in_h:(in_w-288)/2:0" -q:v 11 office1.mjpeg
 
-#define AAC_FILENAME "/kirk.aac"
-#define MJPEG_FILENAME "/kirk.mjpeg"
 
-#define INPUTASSIGNCORE 1
-
-#define DEBUG true
-
-#if DEBUG == true
-#define debug(x) Serial.print(x)
-#define debugf(...) Serial.printf(__VA_ARGS__)
-#define debugln(x) Serial.println(x)
-#else
-#define debug(x)
-#define debugf(...)
-#define debugln(x)
-#endif
-
-#define BATSENS 11
-#define BUTTON1 10
-#define BUTTON2 12
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -44,6 +25,7 @@
 #include <esp_log.h>
 #include <esp_task_wdt.h>
 #include <esp_heap_caps.h>
+#include "config.h"
 #include <player.h>
 #include <Button.h>
 
@@ -90,6 +72,9 @@ void setup()
 
   player.init();
   delay(100);
+  
+  current_video++;
+  current_audio++;
   
   player.start(videoFiles[current_video].c_str());
   //player.set_volume(volume_level);
