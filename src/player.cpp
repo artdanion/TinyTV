@@ -13,7 +13,7 @@
 #include <Arduino_GFX_Library.h>
 
 // Define the static member variables
-libhelix::AACDecoderHelix Player::_aac;
+//libhelix::AACDecoderHelix _aac;
 
 std::vector<String> videoFiles;
 std::vector<String> audioFiles;

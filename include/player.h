@@ -28,6 +28,19 @@ extern std::vector<String> audioFiles;
 extern int current_video;
 extern int current_audio;
 
+// audio task
+esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
+                   int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
+                   int bck_io_num,   /*!< BCK in out pin*/
+                   int ws_io_num,    /*!< WS in out pin*/
+                   int data_out_num, /*!< DATA out pin*/
+                   int data_in_num   /*!< DATA in pin*/
+);
+
+void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len);
+static libhelix::AACDecoderHelix _aac(aacAudioDataCallback);
+static void aac_player_task(void *pvParam);
+static BaseType_t aac_player_task_start(Stream *input, BaseType_t audioAssignCore);
 
 typedef struct
 {
@@ -71,8 +84,6 @@ private:
   unsigned long skipped_frames;
 
   void debug_memory_usage();
-
-  static libhelix::AACDecoderHelix _aac;
 };
 
 // decode and draw task
@@ -83,19 +94,5 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
                  bool useBigEndian, BaseType_t decodeAssignCore, BaseType_t drawAssignCore);
 bool mjpeg_read_frame();
 bool mjpeg_draw_frame();
-
-// audio task
-esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
-                          int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
-                          int bck_io_num,   /*!< BCK in out pin*/
-                          int ws_io_num,    /*!< WS in out pin*/
-                          int data_out_num, /*!< DATA out pin*/
-                          int data_in_num   /*!< DATA in pin*/
-);
-
-void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len);
-static libhelix::AACDecoderHelix _aac(aacAudioDataCallback);
-static void aac_player_task(void *pvParam);
-static BaseType_t aac_player_task_start(Stream *input, BaseType_t audioAssignCore);
 
 #endif
