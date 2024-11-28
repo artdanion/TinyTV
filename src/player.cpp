@@ -13,6 +13,8 @@
 #include <JPEGDEC.h>
 #include <Arduino_GFX_Library.h>
 
+#define MAX_FRAME_SIZE 3200
+
 std::vector<String> videoFiles;
 std::vector<String> audioFiles;
 
@@ -384,7 +386,8 @@ void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len) {
   total_play_audio_ms += millis() - s;
 }
 
-static uint8_t _frame[3200]; // MP3_MAX_FRAME_SIZE is smaller, so always use MP3_MAX_FRAME_SIZE
+static uint8_t _frame[MAX_FRAME_SIZE];
+
 static void aac_player_task(void *pvParam) {
   Player *player = static_cast<Player*>(pvParam);
   File audioFile = player->getAudioFile();
@@ -396,7 +399,7 @@ static void aac_player_task(void *pvParam) {
 
   int r, w;
   unsigned long ms = millis();
-  while (r = audioFile.readBytes((char*)_frame, 3200)) {
+  while (r = audioFile.readBytes((char*)_frame, MAX_FRAME_SIZE)) {
     total_read_audio_ms += millis() - ms;
     ms = millis();
 
