@@ -15,7 +15,6 @@
 // ffmpeg -i office1.mp4 -vf "fps=25,scale=-1:240:flags=lanczos,crop=288:in_h:(in_w-288)/2:0" -q:v 11 office1.mjpeg
 
 
-
 #include <Arduino.h>
 #include <WiFi.h>
 #include <FS.h>
@@ -27,6 +26,7 @@
 #include <esp_heap_caps.h>
 #include "config.h"
 #include <player.h>
+#include <CommonHelix.h>
 #include <Button.h>
 
 /* functions */
@@ -64,15 +64,6 @@ void setup()
   digitalWrite(GFX_BL, HIGH);
 #endif
 
- debugln("Init I2S");
-
-  esp_err_t ret_val = i2s_init(I2S_NUM_0, 44100, I2S_MCLK /* MCLK */, I2S_SCLK /* SCLK */, I2S_LRCK /* LRCK */, I2S_DOUT /* DOUT */, -1 /* DIN */);
-
-  if (ret_val != ESP_OK)
-  {
-    debugf("i2s_init failed: %d\n", ret_val);
-  }
-  i2s_zero_dma_buffer(I2S_NUM_0);
 
   LeftButton.begin();
   RightButton.begin();
@@ -87,7 +78,7 @@ void setup()
   // current_audio++;
   
   player.start(videoFiles[current_video].c_str());
-  //player.set_volume(volume_level);
+  player.set_volume(volume_level);
 }
 
 void loop()

@@ -4,6 +4,7 @@
 #include <FS.h>
 #include <JPEGDEC.h>
 #include <AACDecoderHelix.h>
+#include <CommonHelix.h>
 #include <driver/i2s.h>
 #include <string>
 #include <map>
@@ -28,20 +29,6 @@ extern std::vector<String> audioFiles;
 extern int current_video;
 extern int current_audio;
 
-// audio task
-esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
-                   int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
-                   int bck_io_num,   /*!< BCK in out pin*/
-                   int ws_io_num,    /*!< WS in out pin*/
-                   int data_out_num, /*!< DATA out pin*/
-                   int data_in_num   /*!< DATA in pin*/
-);
-
-void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len);
-static libhelix::AACDecoderHelix _aac(aacAudioDataCallback);
-static void aac_player_task(void *pvParam);
-static BaseType_t aac_player_task_start(Stream *input, BaseType_t audioAssignCore);
-
 typedef struct
 {
   int32_t size;
@@ -61,14 +48,14 @@ typedef struct
   JPEG_DRAW_CALLBACK *drawFunc;
 } paramDecodeTask;
 
-class Player
-{
+class Player {
 public:
   Player();
   void init();
   void start(const std::string &videoFile);
   void stop();
   void set_volume(float volume);
+  File getAudioFile() const;  // Getter function for aFile
 
 private:
   File vFile;
@@ -85,6 +72,23 @@ private:
 
   void debug_memory_usage();
 };
+
+// audio task
+esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
+                   int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
+                   int bck_io_num,   /*!< BCK in out pin*/
+                   int ws_io_num,    /*!< WS in out pin*/
+                   int data_out_num, /*!< DATA out pin*/
+                   int data_in_num   /*!< DATA in pin*/
+);
+
+// Initialize CommonHelix
+void initCommonHelix();
+
+void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len);
+static libhelix::AACDecoderHelix _aac(aacAudioDataCallback);
+static void aac_player_task(void *pvParam);
+static BaseType_t aac_player_task_start(Player *player, BaseType_t audioAssignCore);
 
 // decode and draw task
 static int queueDrawMCU(JPEGDRAW *pDraw);

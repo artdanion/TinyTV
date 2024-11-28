@@ -8,12 +8,10 @@
 #include "player.h"
 #include "config.h"
 #include "AACDecoderHelix.h"
+#include <CommonHelix.h>
 #include <FS.h>
 #include <JPEGDEC.h>
 #include <Arduino_GFX_Library.h>
-
-// Define the static member variables
-//libhelix::AACDecoderHelix _aac;
 
 std::vector<String> videoFiles;
 std::vector<String> audioFiles;
@@ -67,6 +65,7 @@ static unsigned long start_ms, curr_ms, next_frame_ms;
 Arduino_DataBus *bus = NULL;
 Arduino_GFX *gfx = NULL;
 
+// Constructor
 Player::Player() : vFileOpen(false), aFileOpen(false), start_ms(0), curr_ms(0), next_frame_ms(0), next_frame(0), total_read_video_ms(0), total_decode_video_ms(0), skipped_frames(0) {}
 
 void Player::init()
@@ -89,16 +88,19 @@ void Player::init()
   gfx->begin(80000000);
   gfx->fillScreen(BLACK);
 
-  // debugln("Init I2S");
+  debugln("Init I2S");
 
-  // esp_err_t ret_val = i2s_init(I2S_NUM_0, 44100, I2S_MCLK /* MCLK */, I2S_SCLK /* SCLK */, I2S_LRCK /* LRCK */, I2S_DOUT /* DOUT */, I2S_DIN /* DIN */);
+  esp_err_t ret_val = i2s_init(I2S_NUM_0, 44100, I2S_MCLK /* MCLK */, I2S_SCLK /* SCLK */, I2S_LRCK /* LRCK */, I2S_DOUT /* DOUT */, I2S_DIN /* DIN */);
 
-  // if (ret_val != ESP_OK)
-  // {
-  //   debugf("i2s_init failed: %d\n", ret_val);
-  //   return;
-  // }
-  // i2s_zero_dma_buffer(I2S_NUM_0);
+  if (ret_val != ESP_OK)
+  {
+    debugf("i2s_init failed: %d\n", ret_val);
+    return;
+  }
+  i2s_zero_dma_buffer(I2S_NUM_0);
+
+  // Initialize CommonHelix
+  initCommonHelix();
 
   if (!SD_MMC.begin())
   {
@@ -110,8 +112,7 @@ void Player::init()
   getFiles();
 }
 
-void Player::start(const std::string &videoFile)
-{
+void Player::start(const std::string &videoFile) {
   debugln("Starting new video playback");
   debug_memory_usage();
 
@@ -119,26 +120,21 @@ void Player::start(const std::string &videoFile)
   debugf("SD Card Size: %lluMB\n", cardSize);
 
   debugln("\nVideo files:");
-  for (const auto &file : videoFiles)
-  {
+  for (const auto &file : videoFiles) {
     debugln(file);
   }
   delay(200);
   debugln("\nAudio files:");
-  for (const auto &file : audioFiles)
-  {
+  for (const auto &file : audioFiles) {
     debugln(file);
   }
 
   debugln("\nOpen AAC file: " + audioFiles[current_audio]);
 
-  if (audioFiles[current_audio] != "X")
-  {
+  if (audioFiles[current_audio] != "X") {
     aFile = SD_MMC.open(audioFiles[current_audio].c_str());
     aFileOpen = true;
-  }
-  else
-  {
+  } else {
     debugln("No Sound");
   }
 
@@ -147,12 +143,9 @@ void Player::start(const std::string &videoFile)
   vFile = SD_MMC.open(videoFiles[current_video]);
   vFileOpen = true;
 
-  if (!vFile || vFile.isDirectory())
-  {
+  if (!vFile || vFile.isDirectory()) {
     debugln("ERROR: Failed to open file for reading");
-  }
-  else
-  {
+  } else {
     debugln("Init video");
 
     mjpeg_setup(&vFile, MJPEG_BUFFER_SIZE, drawMCU, false /* useBigEndian */, DECODEASSIGNCORE, DRAWASSIGNCORE);
@@ -160,13 +153,11 @@ void Player::start(const std::string &videoFile)
     debugln("Start play audio task");
 
     BaseType_t ret_val;
-    if (aFileOpen)
-    {
-      ret_val = aac_player_task_start(&aFile, AUDIOASSIGNCORE);
+    if (aFileOpen) {
+      ret_val = aac_player_task_start(this, AUDIOASSIGNCORE);
       set_volume(0.5);
 
-      if (ret_val != pdPASS)
-      {
+      if (ret_val != pdPASS) {
         debugf("Audio player task start failed: %d\n", ret_val);
       }
     }
@@ -177,26 +168,21 @@ void Player::start(const std::string &videoFile)
     curr_ms = millis();
     next_frame_ms = start_ms + (++next_frame * 1000 / FPS / 2);
 
-    while (vFile.available() && mjpeg_read_frame())
-    { // Read video
+    while (vFile.available() && mjpeg_read_frame()) { // Read video
       total_read_video_ms += millis() - curr_ms;
       curr_ms = millis();
 
-      if (millis() < next_frame_ms)
-      { // check show frame or skip frame
+      if (millis() < next_frame_ms) { // check show frame or skip frame
         // Play video
         mjpeg_draw_frame();
         total_decode_video_ms += millis() - curr_ms;
         curr_ms = millis();
-      }
-      else
-      {
+      } else {
         ++skipped_frames;
         // debugln("Skip frame");
       }
 
-      while (millis() < next_frame_ms)
-      {
+      while (millis() < next_frame_ms) {
         vTaskDelay(pdMS_TO_TICKS(1));
       }
 
@@ -320,7 +306,127 @@ void Player::debug_memory_usage()
 // Function to set the volume
 void Player::set_volume(float volume)
 {
-  // volume_scale = volume;
+  volume_scale = volume;
+}
+
+// Implementation of the getter function
+File Player::getAudioFile() const {
+  return aFile;
+}
+
+// ------------audio task
+esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
+                          int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
+                          int bck_io_num,   /*!< BCK in out pin*/
+                          int ws_io_num,    /*!< WS in out pin*/
+                          int data_out_num, /*!< DATA out pin*/
+                          int data_in_num   /*!< DATA in pin*/
+)
+{
+  _i2s_num = i2s_num;
+
+  esp_err_t ret_val = ESP_OK;
+
+  i2s_config_t i2s_config;
+  i2s_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
+  i2s_config.sample_rate = sample_rate;
+  i2s_config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
+  i2s_config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
+  i2s_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+  i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+  i2s_config.dma_buf_count = 8;
+  i2s_config.dma_buf_len = 160;
+  i2s_config.use_apll = false;
+  i2s_config.tx_desc_auto_clear = true;
+  i2s_config.fixed_mclk = 0;
+  i2s_config.bits_per_chan = I2S_BITS_PER_CHAN_16BIT;
+
+  i2s_pin_config_t pin_config;
+  pin_config.mck_io_num = mck_io_num;
+  pin_config.bck_io_num = bck_io_num;
+  pin_config.ws_io_num = ws_io_num;
+  pin_config.data_out_num = data_out_num;
+  pin_config.data_in_num = data_in_num;
+
+  ret_val |= i2s_driver_install(i2s_num, &i2s_config, 0, NULL);
+  if (ret_val != ESP_OK)
+  {
+    debugf("i2s_driver_install failed: %d\n", ret_val);
+    return ret_val;
+  }
+
+  ret_val |= i2s_set_pin(i2s_num, &pin_config);
+  if (ret_val != ESP_OK)
+  {
+    debugf("i2s_set_pin failed: %d\n", ret_val);
+    return ret_val;
+  }
+
+  debugln("I2S initialized successfully");
+  return ESP_OK;
+}
+
+static int _samprate = 0;
+void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len) {
+  unsigned long s = millis();
+  if (_samprate != info.sampRateOut) {
+    i2s_set_clk(_i2s_num, info.sampRateOut /* sample_rate */, info.bitsPerSample /* bits_cfg */, (info.nChans == 2) ? I2S_CHANNEL_STEREO : I2S_CHANNEL_MONO /* channel */);
+    _samprate = info.sampRateOut;
+  }
+
+  // Apply volume scaling
+  for (size_t i = 0; i < len; i++) {
+    pwm_buffer[i] = static_cast<int16_t>(pwm_buffer[i] * volume_scale);
+  }
+
+  size_t i2s_bytes_written = 0;
+  i2s_write(_i2s_num, pwm_buffer, len * 2, &i2s_bytes_written, portMAX_DELAY);
+  total_play_audio_ms += millis() - s;
+}
+
+static uint8_t _frame[3200]; // MP3_MAX_FRAME_SIZE is smaller, so always use MP3_MAX_FRAME_SIZE
+static void aac_player_task(void *pvParam) {
+  Player *player = static_cast<Player*>(pvParam);
+  File audioFile = player->getAudioFile();
+  if (!audioFile) {
+    Serial.println("Audio file not open");
+    vTaskDelete(NULL);
+    return;
+  }
+
+  int r, w;
+  unsigned long ms = millis();
+  while (r = audioFile.readBytes((char*)_frame, 3200)) {
+    total_read_audio_ms += millis() - ms;
+    ms = millis();
+
+    while (r > 0) {
+      w = _aac.write(_frame, r);
+      r -= w;
+    }
+    total_decode_audio_ms += millis() - ms;
+    ms = millis();
+  }
+  debugln("AAC stop.");
+
+  vTaskDelete(NULL);
+}
+
+BaseType_t aac_player_task_start(Player *player, BaseType_t audioAssignCore) {
+  return xTaskCreatePinnedToCore(aac_player_task, "aac_player_task", 4096, player, 1, NULL, audioAssignCore);
+}
+
+// Initialize CommonHelix
+void initCommonHelix() {
+  Serial.println("Initializing CommonHelix...");
+
+  // Create an instance of AACDecoderHelix
+  libhelix::AACDecoderHelix aacDecoderInstance(aacAudioDataCallback);
+
+  // Call the begin method on the instance
+  aacDecoderInstance.begin();
+
+  Serial.println("CommonHelix initialized.");
 }
 
 // pixel drawing callback
@@ -577,119 +683,6 @@ bool mjpeg_draw_frame()
   // log_i("queue decode_task end");
 
   return true;
-}
-
-// ------------audio task
-esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
-                          int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
-                          int bck_io_num,   /*!< BCK in out pin*/
-                          int ws_io_num,    /*!< WS in out pin*/
-                          int data_out_num, /*!< DATA out pin*/
-                          int data_in_num   /*!< DATA in pin*/
-)
-{
-  _i2s_num = i2s_num;
-
-  esp_err_t ret_val = ESP_OK;
-
-  i2s_config_t i2s_config;
-  i2s_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
-  i2s_config.sample_rate = sample_rate;
-  i2s_config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
-  i2s_config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
-  i2s_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
-  i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
-  i2s_config.dma_buf_count = 8;
-  i2s_config.dma_buf_len = 160;
-  i2s_config.use_apll = false;
-  i2s_config.tx_desc_auto_clear = true;
-  i2s_config.fixed_mclk = 0;
-  i2s_config.bits_per_chan = I2S_BITS_PER_CHAN_16BIT;
-
-  i2s_pin_config_t pin_config;
-  pin_config.mck_io_num = mck_io_num;
-  pin_config.bck_io_num = bck_io_num;
-  pin_config.ws_io_num = ws_io_num;
-  pin_config.data_out_num = data_out_num;
-  pin_config.data_in_num = data_in_num;
-
-  ret_val |= i2s_driver_install(i2s_num, &i2s_config, 0, NULL);
-  if (ret_val != ESP_OK)
-  {
-    debugf("i2s_driver_install failed: %d\n", ret_val);
-    return ret_val;
-  }
-
-  ret_val |= i2s_set_pin(i2s_num, &pin_config);
-  if (ret_val != ESP_OK)
-  {
-    debugf("i2s_set_pin failed: %d\n", ret_val);
-    return ret_val;
-  }
-
-  debugln("I2S initialized successfully");
-  return ESP_OK;
-}
-
-static int _samprate = 0;
-void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len)
-{
-  unsigned long s = millis();
-  if (_samprate != info.sampRateOut)
-  {
-    i2s_set_clk(_i2s_num, info.sampRateOut /* sample_rate */, info.bitsPerSample /* bits_cfg */, (info.nChans == 2) ? I2S_CHANNEL_STEREO : I2S_CHANNEL_MONO /* channel */);
-    _samprate = info.sampRateOut;
-  }
-
-  // Apply volume scaling
-  for (size_t i = 0; i < len; i++)
-  {
-    pwm_buffer[i] = static_cast<int16_t>(pwm_buffer[i] * volume_scale);
-  }
-
-  size_t i2s_bytes_written = 0;
-  i2s_write(_i2s_num, pwm_buffer, len * 2, &i2s_bytes_written, portMAX_DELAY);
-  total_play_audio_ms += millis() - s;
-}
-
-static uint8_t _frame[3200]; // MP3_MAX_FRAME_SIZE is smaller, so always use MP3_MAX_FRAME_SIZE
-
-static void aac_player_task(void *pvParam)
-{
-  Stream *input = (Stream *)pvParam;
-
-  int r, w;
-  unsigned long ms = millis();
-  while (r = input->readBytes(_frame, 3200))
-  {
-    total_read_audio_ms += millis() - ms;
-    ms = millis();
-
-    while (r > 0)
-    {
-      w = _aac.write(_frame, r);
-      r -= w;
-    }
-    total_decode_audio_ms += millis() - ms;
-    ms = millis();
-  }
-  debugln("AAC stop.");
-
-  vTaskDelete(NULL);
-}
-
-static BaseType_t aac_player_task_start(Stream *input, BaseType_t audioAssignCore)
-{
-  _aac.begin();
-
-  return xTaskCreatePinnedToCore(
-      (TaskFunction_t)aac_player_task,
-      (const char *const)"AAC Player Task",
-      (const uint32_t)2000,
-      (void *const)input,
-      (UBaseType_t)configMAX_PRIORITIES - 1,
-      (TaskHandle_t *const)&_audioTask,
-      (const BaseType_t)audioAssignCore);
 }
 
 // scan SD Card and fill file vectors
