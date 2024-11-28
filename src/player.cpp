@@ -13,7 +13,7 @@
 #include <JPEGDEC.h>
 #include <Arduino_GFX_Library.h>
 
-#define MAX_FRAME_SIZE 3200
+#define MAX_FRAME_SIZE 1600
 
 std::vector<String> videoFiles;
 std::vector<String> audioFiles;
@@ -172,8 +172,9 @@ void Player::start(const std::string &videoFile)
     if (aFileOpen)
     {
       _aac.setDataCallback(aacAudioDataCallback);
+      _aac.begin();
       ret_val = aac_player_task_start(this, AUDIOASSIGNCORE);
-      set_volume(0.5);
+      set_volume(0.8);
 
       if (ret_val != pdPASS)
       {

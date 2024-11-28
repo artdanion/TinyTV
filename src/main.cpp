@@ -74,8 +74,8 @@ void setup()
   player.init();
   delay(100);
   
-  // current_video++;
-  // current_audio++;
+  current_video++;
+  current_audio++;
   
   player.start(videoFiles[current_video].c_str());
   player.set_volume(volume_level);
