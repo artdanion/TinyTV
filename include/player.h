@@ -19,7 +19,7 @@ void getFiles();
 void scanDirectory(fs::FS &fs, String dirname, std::map<std::string, std::string> &fileMap);
 void populateVectorsFromMap(const std::map<std::string, std::string> &fileMap, std::vector<String> &videoFiles, std::vector<String> &audioFiles);
 void listFilesByExtension(fs::FS &fs, std::vector<String> &videoFiles, std::vector<String> &audioFiles);
-static int drawMCU(JPEGDRAW *pDraw);
+int drawMCU(JPEGDRAW *pDraw);
 void showStats();
 
 // Declare the vectors as extern
@@ -69,8 +69,11 @@ private:
   unsigned long total_read_video_ms;
   unsigned long total_decode_video_ms;
   unsigned long skipped_frames;
+  libhelix::AACDecoderHelix _aac;
 
   void debug_memory_usage();
+
+  friend void aac_player_task(void *pvParam);
 };
 
 // audio task
@@ -82,18 +85,14 @@ esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
                    int data_in_num   /*!< DATA in pin*/
 );
 
-// Initialize CommonHelix
-void initCommonHelix();
-
 void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len);
-static libhelix::AACDecoderHelix _aac(aacAudioDataCallback);
-static void aac_player_task(void *pvParam);
-static BaseType_t aac_player_task_start(Player *player, BaseType_t audioAssignCore);
+void aac_player_task(void *pvParam);
+BaseType_t aac_player_task_start(Player *player, BaseType_t audioAssignCore);
 
 // decode and draw task
-static int queueDrawMCU(JPEGDRAW *pDraw);
-static void decode_task(void *arg);
-static void draw_task(void *arg);
+int queueDrawMCU(JPEGDRAW *pDraw);
+void decode_task(void *arg);
+void draw_task(void *arg);
 bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDraw,
                  bool useBigEndian, BaseType_t decodeAssignCore, BaseType_t drawAssignCore);
 bool mjpeg_read_frame();
