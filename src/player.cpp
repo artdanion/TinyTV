@@ -7,6 +7,7 @@
 #include "driver/i2s.h"
 #include "player.h"
 #include "config.h"
+#include <Audio.h>
 #include "AACDecoderHelix.h"
 #include <FS.h>
 #include <JPEGDEC.h>
@@ -49,13 +50,14 @@ int32_t _remain = 0;
 mjpegBuf _mjpegBufs[NUMBER_OF_DECODE_BUFFER];
 
 /* audio task*/
-TaskHandle_t _audioTask = NULL;
+QueueHandle_t audioSetQueue = NULL;
+QueueHandle_t audioGetQueue = NULL;
+struct audioMessage audioRxMessage;
+struct audioMessage audioTxMessage;
+
 static unsigned long total_read_audio_ms = 0;
 static unsigned long total_decode_audio_ms = 0;
 static unsigned long total_play_audio_ms = 0;
-
-i2s_port_t _i2s_num = I2S_NUM_0;
-float volume_scale = 0.8f; // Volume scaling factor (1.0f means no change)
 
 /* variables */
 bool sdcard = false;
@@ -65,6 +67,11 @@ static unsigned long start_ms, curr_ms, next_frame_ms;
 
 Arduino_DataBus *bus = NULL;
 Arduino_GFX *gfx = NULL;
+Audio audio;
+
+//****************************************************************************************
+//                                   PLAYER - CLASS                                      *
+//****************************************************************************************
 
 // Constructor
 Player::Player() : vFileOpen(false),
@@ -80,8 +87,6 @@ Player::Player() : vFileOpen(false),
 void Player::init()
 {
   debug_memory_usage();
-
-  // Initialize SD card if not already initialized
   debugln("Init FS");
 
   if (!SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0, SD_MMC_D1, SD_MMC_D2, SD_MMC_D3))
@@ -97,17 +102,6 @@ void Player::init()
   gfx->begin(80000000);
   gfx->fillScreen(BLACK);
 
-  debugln("Init I2S");
-
-  esp_err_t ret_val = i2s_init(I2S_NUM_0, 44100, I2S_MCLK /* MCLK */, I2S_SCLK /* SCLK */, I2S_LRCK /* LRCK */, I2S_DOUT /* DOUT */, I2S_DIN /* DIN */);
-
-  if (ret_val != ESP_OK)
-  {
-    debugf("i2s_init failed: %d\n", ret_val);
-    return;
-  }
-  i2s_zero_dma_buffer(I2S_NUM_0);
-
   if (!SD_MMC.begin())
   {
     debugln("SD Card initialization failed!");
@@ -116,6 +110,15 @@ void Player::init()
   debugln("SD Card initialized.");
 
   getFiles();
+
+  // Initialize tasks and buffers using mjpeg_setup
+  if (!mjpeg_setup(&vFile, MJPEG_BUFFER_SIZE, drawMCU, false /* useBigEndian */, DECODEASSIGNCORE, DRAWASSIGNCORE))
+  {
+    debugln("ERROR: Failed to initialize MJPEG setup");
+    return;
+  }
+
+  audioInit();
 }
 
 void Player::start(const std::string &videoFile)
@@ -123,32 +126,11 @@ void Player::start(const std::string &videoFile)
   debugln("Starting new video playback");
   debug_memory_usage();
 
+  // Ensure the current playback is stopped
+  stop();
+
   uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
   debugf("SD Card Size: %lluMB\n", cardSize);
-
-  debugln("\nVideo files:");
-  for (const auto &file : videoFiles)
-  {
-    debugln(file);
-  }
-  delay(200);
-  debugln("\nAudio files:");
-  for (const auto &file : audioFiles)
-  {
-    debugln(file);
-  }
-
-  debugln("\nOpen AAC file: " + audioFiles[current_audio]);
-
-  if (audioFiles[current_audio] != "X")
-  {
-    aFile = SD_MMC.open(audioFiles[current_audio].c_str());
-    aFileOpen = true;
-  }
-  else
-  {
-    debugln("No Sound");
-  }
 
   debugln("Open MJPEG File: " + videoFiles[current_video]);
 
@@ -163,23 +145,20 @@ void Player::start(const std::string &videoFile)
   {
     debugln("Init video");
 
-    mjpeg_setup(&vFile, MJPEG_BUFFER_SIZE, drawMCU, false /* useBigEndian */, DECODEASSIGNCORE, DRAWASSIGNCORE);
+    // Reinitialize the video setup with the new stream
+    _input = &vFile; // Update the input stream
+    _mjpeg_buf = _mjpegBufs[_mBufIdx].buf; // Reset the buffer pointer
+    _mjpeg_buf_offset = 0; // Reset the buffer offset
 
     debugln("Start play audio task");
 
-    BaseType_t ret_val;
-    if (aFileOpen)
+    if (audioFiles[current_audio] != "X")
     {
-      _aac.setDataCallback(aacAudioDataCallback);
-      _aac.begin();
-      
-      ret_val = aac_player_task_start(this, AUDIOASSIGNCORE);
-      set_volume(0.8);
-
-      if (ret_val != pdPASS)
-      {
-        debugf("Audio player task start failed: %d\n", ret_val);
-      }
+      audioConnecttoSD(audioFiles[current_audio].c_str());
+    }
+    else
+    {
+      debugln("No Sound");
     }
 
     debugln("Start play video");
@@ -222,90 +201,17 @@ void Player::start(const std::string &videoFile)
 void Player::stop()
 {
   debug_memory_usage();
+  debugln("Stopping player");
 
   // Stop the AAC decoder
-  _aac.end();
   delay(20);
-
-  // Delete the AAC player task
-  if (_audioTask != NULL)
-  {
-    vTaskDelete(_audioTask);
-    _audioTask = NULL;
-  }
-
-  // Close the audio file
-  if (aFileOpen)
-  {
-    aFile.close();
-    aFileOpen = false;
-  }
-
-  // Delete the decode task
-  if (_decodeTask != NULL)
-  {
-    vTaskDelete(_decodeTask);
-    _decodeTask = NULL;
-  }
-
-  // Delete the draw task
-  if (_drawTask != NULL)
-  {
-    vTaskDelete(_drawTask);
-    _drawTask = NULL;
-  }
 
   // Close the video file
   if (vFileOpen)
   {
+    debugln("Closing video file");
     vFile.close();
     vFileOpen = false;
-  }
-
-  // Free the read buffer
-  if (_read_buf != NULL)
-  {
-    free(_read_buf);
-    _read_buf = NULL;
-  }
-
-  // Free the decode buffers
-  for (int i = 0; i < NUMBER_OF_DECODE_BUFFER; ++i)
-  {
-    if (_mjpegBufs[i].buf != NULL)
-    {
-      free(_mjpegBufs[i].buf);
-      _mjpegBufs[i].buf = NULL;
-    }
-  }
-
-  // Free the draw buffers
-  for (int i = 0; i < NUMBER_OF_DRAW_BUFFER; ++i)
-  {
-    if (jpegdraws[i].pPixels != NULL)
-    {
-      free(jpegdraws[i].pPixels);
-      jpegdraws[i].pPixels = NULL;
-    }
-  }
-
-  // Delete the queues
-  if (_xqh != NULL)
-  {
-    vQueueDelete(_xqh);
-    _xqh = NULL;
-  }
-
-  if (_pDecodeTask.xqh != NULL)
-  {
-    vQueueDelete(_pDecodeTask.xqh);
-    _pDecodeTask.xqh = NULL;
-  }
-
-  if (_pDrawTask.xqh != NULL)
-  {
-    vQueueDelete(_pDrawTask.xqh);
-    _pDrawTask.xqh = NULL;
   }
 
   // Reset static variables
@@ -328,133 +234,141 @@ void Player::debug_memory_usage()
   debugf("Free heap: %u bytes, Minimum free heap: %u bytes\n", free_heap, min_free_heap);
 }
 
-// Function to set the volume
-void Player::set_volume(float volume)
+void Player::setVolume(int volume)
 {
-  volume_scale = volume;
+  audio.setVolume(volume);
 }
 
-// Implementation of the getter function
-File Player::getAudioFile() const
+//****************************************************************************************
+//                                   A U D I O _ T A S K                                 *
+//****************************************************************************************
+
+void CreateQueues()
 {
-  return aFile;
+  audioSetQueue = xQueueCreate(10, sizeof(struct audioMessage));
+  audioGetQueue = xQueueCreate(10, sizeof(struct audioMessage));
 }
 
-// ------------audio task
-esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
-                   int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
-                   int bck_io_num,   /*!< BCK in out pin*/
-                   int ws_io_num,    /*!< WS in out pin*/
-                   int data_out_num, /*!< DATA out pin*/
-                   int data_in_num   /*!< DATA in pin*/
-)
+void audioInit()
 {
-  _i2s_num = i2s_num;
-
-  esp_err_t ret_val = ESP_OK;
-
-  i2s_config_t i2s_config;
-  i2s_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
-  i2s_config.sample_rate = sample_rate;
-  i2s_config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
-  i2s_config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
-  i2s_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
-  i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
-  i2s_config.dma_buf_count = 8;
-  i2s_config.dma_buf_len = 160;
-  i2s_config.use_apll = false;
-  i2s_config.tx_desc_auto_clear = true;
-  i2s_config.fixed_mclk = 0;
-  i2s_config.bits_per_chan = I2S_BITS_PER_CHAN_16BIT;
-
-  i2s_pin_config_t pin_config;
-  pin_config.mck_io_num = mck_io_num;
-  pin_config.bck_io_num = bck_io_num;
-  pin_config.ws_io_num = ws_io_num;
-  pin_config.data_out_num = data_out_num;
-  pin_config.data_in_num = data_in_num;
-
-  ret_val |= i2s_driver_install(i2s_num, &i2s_config, 0, NULL);
-  if (ret_val != ESP_OK)
-  {
-    debugf("i2s_driver_install failed: %d\n", ret_val);
-    return ret_val;
-  }
-
-  ret_val |= i2s_set_pin(i2s_num, &pin_config);
-  if (ret_val != ESP_OK)
-  {
-    debugf("i2s_set_pin failed: %d\n", ret_val);
-    return ret_val;
-  }
-
-  debugln("I2S initialized successfully");
-  return ESP_OK;
+  xTaskCreatePinnedToCore(
+      audioTask,             /* Function to implement the task */
+      "audioplay",           /* Name of the task */
+      5000,                  /* Stack size in words */
+      NULL,                  /* Task input parameter */
+      2 | portPRIVILEGE_BIT, /* Priority of the task */
+      NULL,                  /* Task handle. */
+      AUDIOASSIGNCORE        /* Core where the task should run */
+  );
 }
 
-static int _samprate = 0;
-void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len)
+void audioTask(void *parameter)
 {
-  unsigned long s = millis();
-  if (_samprate != info.sampRateOut)
+  CreateQueues();
+  if (!audioSetQueue || !audioGetQueue)
   {
-    i2s_set_clk(_i2s_num, info.sampRateOut /* sample_rate */, info.bitsPerSample /* bits_cfg */, (info.nChans == 2) ? I2S_CHANNEL_STEREO : I2S_CHANNEL_MONO /* channel */);
-    _samprate = info.sampRateOut;
-    debug("len: ");
-    debugln(len);
-  }
-
-
-  for (size_t i = 0; i < len; i++)
-  {
-    pwm_buffer[i] = static_cast<int16_t>(pwm_buffer[i] * volume_scale);
-  }
-
-  size_t i2s_bytes_written = 0;
-  i2s_write(_i2s_num, pwm_buffer, len * 2, &i2s_bytes_written, portMAX_DELAY);
-  total_play_audio_ms += millis() - s;
-}
-
-uint8_t _frame[MAX_FRAME_SIZE];
-
-void aac_player_task(void *pvParam)
-{
-  Player *player = static_cast<Player *>(pvParam);
-  File audioFile = player->getAudioFile();
-  if (!audioFile)
-  {
-    Serial.println("Audio file not open");
-    vTaskDelete(NULL);
-    return;
-  }
-
-  int r, w;
-  unsigned long ms = millis();
-  while (r = audioFile.readBytes((char *)_frame, MAX_FRAME_SIZE))
-  {
-    total_read_audio_ms += millis() - ms;
-    ms = millis();
-
-    while (r > 0)
+    log_e("queues are not initialized");
+    while (true)
     {
-      w = player->_aac.write(_frame, r);
-      r -= w;
-    }
-    total_decode_audio_ms += millis() - ms;
-    ms = millis();
-    vTaskDelay(pdMS_TO_TICKS(1));
+      ;
+    } // endless loop
   }
-  debugln("AAC stop.");
 
-  vTaskDelete(NULL);
+  struct audioMessage audioRxTaskMessage;
+  struct audioMessage audioTxTaskMessage;
+
+  audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
+  audio.setVolume(15); // 0...21
+
+  while (true)
+  {
+    if (xQueueReceive(audioSetQueue, &audioRxTaskMessage, 1) == pdPASS)
+    {
+      if (audioRxTaskMessage.cmd == SET_VOLUME)
+      {
+        audioTxTaskMessage.cmd = SET_VOLUME;
+        audio.setVolume(audioRxTaskMessage.value);
+        audioTxTaskMessage.ret = 1;
+        xQueueSend(audioGetQueue, &audioTxTaskMessage, portMAX_DELAY);
+      }
+      else if (audioRxTaskMessage.cmd == CONNECTTOHOST)
+      {
+        audioTxTaskMessage.cmd = CONNECTTOHOST;
+        audioTxTaskMessage.ret = audio.connecttohost(audioRxTaskMessage.txt);
+        xQueueSend(audioGetQueue, &audioTxTaskMessage, portMAX_DELAY);
+      }
+      else if (audioRxTaskMessage.cmd == CONNECTTOSD)
+      {
+        audioTxTaskMessage.cmd = CONNECTTOSD;
+        audioTxTaskMessage.ret = audio.connecttoFS(SD_MMC, audioRxTaskMessage.txt);
+        xQueueSend(audioGetQueue, &audioTxTaskMessage, portMAX_DELAY);
+      }
+      else if (audioRxTaskMessage.cmd == GET_VOLUME)
+      {
+        audioTxTaskMessage.cmd = GET_VOLUME;
+        audioTxTaskMessage.ret = audio.getVolume();
+        xQueueSend(audioGetQueue, &audioTxTaskMessage, portMAX_DELAY);
+      }
+      else
+      {
+        log_i("error");
+      }
+    }
+    audio.loop();
+    if (!audio.isRunning())
+    {
+      sleep(1);
+    }
+  }
 }
 
-BaseType_t aac_player_task_start(Player *player, BaseType_t audioAssignCore)
+audioMessage transmitReceive(audioMessage msg)
 {
-  return xTaskCreatePinnedToCore(aac_player_task, "aac_player_task", 4096, player, 1, NULL, audioAssignCore);
+  xQueueSend(audioSetQueue, &msg, portMAX_DELAY);
+  if (xQueueReceive(audioGetQueue, &audioRxMessage, portMAX_DELAY) == pdPASS)
+  {
+    if (msg.cmd != audioRxMessage.cmd)
+    {
+      log_e("wrong reply from message queue");
+    }
+  }
+  return audioRxMessage;
 }
 
-// pixel drawing callback
+void audioSetVolume(uint8_t vol)
+{
+  audioTxMessage.cmd = SET_VOLUME;
+  audioTxMessage.value = vol;
+  audioMessage RX = transmitReceive(audioTxMessage);
+}
+
+uint8_t audioGetVolume()
+{
+  audioTxMessage.cmd = GET_VOLUME;
+  audioMessage RX = transmitReceive(audioTxMessage);
+  return RX.ret;
+}
+
+bool audioConnecttohost(const char *host)
+{
+  audioTxMessage.cmd = CONNECTTOHOST;
+  audioTxMessage.txt = host;
+  audioMessage RX = transmitReceive(audioTxMessage);
+  return RX.ret;
+}
+
+bool audioConnecttoSD(const char *filename)
+{
+  audioTxMessage.cmd = CONNECTTOSD;
+  audioTxMessage.txt = filename;
+  audioMessage RX = transmitReceive(audioTxMessage);
+  return RX.ret;
+}
+
+//****************************************************************************************
+//                                   DECODE & DRAW _ T A S K                             *
+//****************************************************************************************
+
 int drawMCU(JPEGDRAW *pDraw)
 {
   // debugf("Draw pos = (%d, %d), size = %d x %d\n", pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight);
@@ -710,7 +624,10 @@ bool mjpeg_draw_frame()
   return true;
 }
 
-// scan SD Card and fill file vectors
+//****************************************************************************************
+//                                  FILE _ FUNCTIONS                                     *
+//****************************************************************************************
+
 void getFiles()
 {
   if (!SD_MMC.begin("/root", false))
@@ -816,7 +733,10 @@ void listFilesByExtension(fs::FS &fs, std::vector<String> &videoFiles, std::vect
   populateVectorsFromMap(fileMap, videoFiles, audioFiles);
 }
 
-// shows stats
+//****************************************************************************************
+//                                  SHOW STATS FUNCTION                                  *
+//****************************************************************************************
+
 void showStats()
 {
   gfx->fillScreen(BLACK);

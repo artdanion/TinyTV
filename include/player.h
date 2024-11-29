@@ -2,6 +2,7 @@
 #define PLAYER_H
 
 #include <FS.h>
+#include <Audio.h>
 #include <JPEGDEC.h>
 #include <AACDecoderHelix.h>
 #include <driver/i2s.h>
@@ -28,6 +29,15 @@ extern std::vector<String> audioFiles;
 extern int current_video;
 extern int current_audio;
 
+extern struct audioMessage{
+    uint8_t     cmd;
+    const char* txt;
+    uint32_t    value;
+    uint32_t    ret;
+} audioTxMessage, audioRxMessage;
+
+enum : uint8_t { SET_VOLUME, GET_VOLUME, CONNECTTOHOST, CONNECTTOSD };
+
 typedef struct
 {
   int32_t size;
@@ -51,10 +61,10 @@ class Player {
 public:
   Player();
   void init();
+  void initTasksAndBuffers();
   void start(const std::string &videoFile);
   void stop();
-  void set_volume(float volume);
-  File getAudioFile() const;  // Getter function for aFile
+  void setVolume(int volume);
 
 private:
   File vFile;
@@ -68,25 +78,19 @@ private:
   unsigned long total_read_video_ms;
   unsigned long total_decode_video_ms;
   unsigned long skipped_frames;
-  libhelix::AACDecoderHelix _aac;
 
   void debug_memory_usage();
-
-  friend void aac_player_task(void *pvParam);
 };
 
-// audio task
-esp_err_t i2s_init(i2s_port_t i2s_num, uint32_t sample_rate,
-                   int mck_io_num,   /*!< MCK in out pin. Note that ESP32 supports setting MCK on GPIO0/GPIO1/GPIO3 only*/
-                   int bck_io_num,   /*!< BCK in out pin*/
-                   int ws_io_num,    /*!< WS in out pin*/
-                   int data_out_num, /*!< DATA out pin*/
-                   int data_in_num   /*!< DATA in pin*/
-);
-
-void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len);
-void aac_player_task(void *pvParam);
-BaseType_t aac_player_task_start(Player *player, BaseType_t audioAssignCore);
+// audio functions
+void CreateQueues();
+void audioTask(void *parameter);
+void audioInit();
+audioMessage transmitReceive(audioMessage msg);
+void audioSetVolume(uint8_t vol);
+uint8_t audioGetVolume();
+bool audioConnecttohost(const char* host);
+bool audioConnecttoSD(const char* filename);
 
 // decode and draw task
 int queueDrawMCU(JPEGDRAW *pDraw);

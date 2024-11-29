@@ -58,8 +58,8 @@
 #define GFX_MOSI 47 // 11
 
 #define I2S_MCLK -1
-#define I2S_SCLK 8 // 5
-#define I2S_LRCK 9 // 6
+#define I2S_BCLK 8 // 5
+#define I2S_LRC 9 // 6
 #define I2S_DOUT 7 // 4
 #define I2S_DIN -1
 

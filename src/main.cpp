@@ -14,7 +14,6 @@
 // ffmpeg -i  office1.mp4 -ar 44100 -ac 1 -ab 24k -filter:a loudnorm -filter:a "volume=-5dB" office1.aac
 // ffmpeg -i office1.mp4 -vf "fps=25,scale=-1:240:flags=lanczos,crop=288:in_h:(in_w-288)/2:0" -q:v 11 office1.mjpeg
 
-
 #include <Arduino.h>
 #include <WiFi.h>
 #include <FS.h>
@@ -26,7 +25,7 @@
 #include <esp_heap_caps.h>
 #include "config.h"
 #include <player.h>
-#include <CommonHelix.h>
+#include <Audio.h>
 #include <Button.h>
 
 /* functions */
@@ -64,7 +63,6 @@ void setup()
   digitalWrite(GFX_BL, HIGH);
 #endif
 
-
   LeftButton.begin();
   RightButton.begin();
   delay(100);
@@ -72,13 +70,14 @@ void setup()
   xTaskCreatePinnedToCore(input_task, "Button Task", 4096, NULL, (UBaseType_t)configMAX_PRIORITIES - 1, &inputHandle, INPUTASSIGNCORE);
 
   player.init();
+
   delay(100);
-  
+
   // current_video++;
   // current_audio++;
-  
+
   player.start(videoFiles[current_video].c_str());
-  player.set_volume(volume_level);
+  player.setVolume(15);
 }
 
 void loop()
@@ -120,12 +119,11 @@ void input_task(void *param)
         debugln("mute");
       }
       if (is_muted)
-        player.set_volume(0.0);
+        player.setVolume(0);
       else
-        player.set_volume(0.6);
+        player.setVolume(15);
       LeftButtonsMillis = 0;
     }
     vTaskDelay(pdMS_TO_TICKS(20)); // Delay for 20 milliseconds
   }
 }
-
