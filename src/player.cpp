@@ -8,12 +8,11 @@
 #include "player.h"
 #include "config.h"
 #include "AACDecoderHelix.h"
-#include <CommonHelix.h>
 #include <FS.h>
 #include <JPEGDEC.h>
 #include <Arduino_GFX_Library.h>
 
-#define MAX_FRAME_SIZE 1600
+#define MAX_FRAME_SIZE 3200
 
 std::vector<String> videoFiles;
 std::vector<String> audioFiles;
@@ -55,7 +54,7 @@ static unsigned long total_read_audio_ms = 0;
 static unsigned long total_decode_audio_ms = 0;
 static unsigned long total_play_audio_ms = 0;
 
-static i2s_port_t _i2s_num;
+i2s_port_t _i2s_num = I2S_NUM_0;
 float volume_scale = 0.8f; // Volume scaling factor (1.0f means no change)
 
 /* variables */
@@ -173,6 +172,7 @@ void Player::start(const std::string &videoFile)
     {
       _aac.setDataCallback(aacAudioDataCallback);
       _aac.begin();
+      
       ret_val = aac_player_task_start(this, AUDIOASSIGNCORE);
       set_volume(0.8);
 
@@ -400,9 +400,11 @@ void aacAudioDataCallback(AACFrameInfo &info, int16_t *pwm_buffer, size_t len)
   {
     i2s_set_clk(_i2s_num, info.sampRateOut /* sample_rate */, info.bitsPerSample /* bits_cfg */, (info.nChans == 2) ? I2S_CHANNEL_STEREO : I2S_CHANNEL_MONO /* channel */);
     _samprate = info.sampRateOut;
+    debug("len: ");
+    debugln(len);
   }
 
-  // Apply volume scaling
+
   for (size_t i = 0; i < len; i++)
   {
     pwm_buffer[i] = static_cast<int16_t>(pwm_buffer[i] * volume_scale);
@@ -440,6 +442,7 @@ void aac_player_task(void *pvParam)
     }
     total_decode_audio_ms += millis() - ms;
     ms = millis();
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
   debugln("AAC stop.");
 

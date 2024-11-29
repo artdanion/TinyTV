@@ -4,7 +4,6 @@
 #include <FS.h>
 #include <JPEGDEC.h>
 #include <AACDecoderHelix.h>
-#include <CommonHelix.h>
 #include <driver/i2s.h>
 #include <string>
 #include <map>
