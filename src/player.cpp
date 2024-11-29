@@ -8,7 +8,6 @@
 #include "player.h"
 #include "config.h"
 #include <Audio.h>
-#include "AACDecoderHelix.h"
 #include <FS.h>
 #include <JPEGDEC.h>
 #include <Arduino_GFX_Library.h>
@@ -155,6 +154,7 @@ void Player::start(const std::string &videoFile)
     if (audioFiles[current_audio] != "X")
     {
       audioConnecttoSD(audioFiles[current_audio].c_str());
+      debugln("Open Audio File: " + audioFiles[current_audio]);
     }
     else
     {
