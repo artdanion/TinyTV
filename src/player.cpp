@@ -20,6 +20,8 @@ std::vector<String> audioFiles;
 int current_video = 0;
 int current_audio = 0;
 
+bool task_response = false;
+
 /* video task*/
 int _draw_queue_cnt = 0;
 JPEGDEC _jpegDec;
@@ -238,7 +240,9 @@ void Player::stop()
   _draw_queue_cnt = 0;
 
   debugln("Files closed");
-  delay(100);
+
+  delay(500);
+  task_response = false;
   debug_memory_usage();
 }
 
@@ -373,13 +377,13 @@ void CreateQueues()
 void audioInit()
 {
   xTaskCreatePinnedToCore(
-      audioTask,                        /* Function to implement the task */
-      "audioplay",                      /* Name of the task */
-      5000,                             /* Stack size in words */
-      NULL,                             /* Task input parameter */
-      2 | portPRIVILEGE_BIT,            /* Priority of the task */
-      (TaskHandle_t *const)&_audioTask, /* Task handle. */
-      AUDIOASSIGNCORE                   /* Core where the task should run */
+      audioTask,                         /* Function to implement the task */
+      "audioplay",                       /* Name of the task */
+      5000,                              /* Stack size in words */
+      NULL,                              /* Task input parameter */
+      configMAX_PRIORITIES - AUDIO_PRIO, /* Priority of the task */
+      (TaskHandle_t *const)&_audioTask,  /* Task handle. */
+      AUDIOASSIGNCORE                    /* Core where the task should run */
   );
 }
 
@@ -499,6 +503,20 @@ int drawMCU(JPEGDRAW *pDraw)
   return 1;
 } /* drawMCU() */
 
+void CreateVideoQueues()
+{
+  videoSetQueue = xQueueCreate(10, sizeof(struct videoMessage));
+  videoGetQueue = xQueueCreate(10, sizeof(struct videoMessage));
+  if (!videoSetQueue || !videoGetQueue)
+  {
+    debugln("Failed to create video command queues");
+  }
+  else
+  {
+    debugln("Video command queues created successfully");
+  }
+}
+
 // ----------- Decode and Draw Task
 int queueDrawMCU(JPEGDRAW *pDraw)
 {
@@ -525,10 +543,14 @@ void decode_task(void *arg)
   struct videoMessage videoRxTaskMessage;
   struct videoMessage videoTxTaskMessage;
 
-  debugln("decode_task start.");
+  debugln("decode_task ---->  start.");
+  vTaskDelay(pdMS_TO_TICKS(20));
+
   while (true)
   {
-    debugln("Checking videoSetQueue for commands.");
+    if (task_response)
+      debugln("Decode Task is running...");
+
     if (xQueueReceive(videoSetQueue, &videoRxTaskMessage, 0) == pdPASS)
     {
       debugln("Received command in decode_task.");
@@ -543,7 +565,6 @@ void decode_task(void *arg)
       }
     }
 
-    debugln("Checking decode queue for frames.");
     if (xQueueReceive(p->xqh, &mBuf, portMAX_DELAY))
     {
       unsigned long s = millis();
@@ -557,9 +578,12 @@ void decode_task(void *arg)
       _jpegDec.close();
       total_decode_video_ms += millis() - s;
     }
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
   vQueueDelete(p->xqh);
+  vTaskDelay(pdMS_TO_TICKS(20));
   debugln("decode_task end.");
+  vTaskDelay(pdMS_TO_TICKS(20));
   vTaskDelete(NULL);
 }
 
@@ -567,13 +591,22 @@ void draw_task(void *arg)
 {
   paramDrawTask *p = (paramDrawTask *)arg;
   JPEGDRAW *pDraw;
-  debugln("draw_task start.");
+  
+  debugln("draw_task ---->  start.");
+  vTaskDelay(pdMS_TO_TICKS(20));
+
   while (xQueueReceive(p->xqh, &pDraw, portMAX_DELAY))
   {
+    if (task_response)
+      debugln("Draw Task is running...");
+
     p->drawFunc(pDraw);
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
   vQueueDelete(p->xqh);
+  vTaskDelay(pdMS_TO_TICKS(20));
   debugln("draw_task end.");
+  vTaskDelay(pdMS_TO_TICKS(20));
   vTaskDelete(NULL);
 }
 
@@ -615,11 +648,11 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
     _mjpegBufs[i].buf = (uint8_t *)malloc(mjpegBufSize);
     if (_mjpegBufs[i].buf)
     {
-      debugf("#%d decode buffer allocated.", i);
+      log_i("#%d decode buffer allocated.", i);
     }
     else
     {
-      debugf("#%d decode buffer allocat failed.", i);
+      log_e("#%d decode buffer allocat failed.", i);
     }
   }
   _mjpeg_buf = _mjpegBufs[_mBufIdx].buf;
@@ -646,7 +679,7 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
           (const char *const)"MJPEG decode Task",
           (const uint32_t)5000,
           (void *const)&_pDecodeTask,
-          (UBaseType_t)configMAX_PRIORITIES - 1,
+          (UBaseType_t)configMAX_PRIORITIES - DECODE_PRIO,
           (TaskHandle_t *const)&_decodeTask,
           (const BaseType_t)decodeAssignCore) != pdPASS)
   {
@@ -661,9 +694,9 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
   if (xTaskCreatePinnedToCore(
           (TaskFunction_t)draw_task,
           (const char *const)"MJPEG Draw Task",
-          (const uint32_t)2000,
+          (const uint32_t)5000,
           (void *const)&_pDrawTask,
-          (UBaseType_t)configMAX_PRIORITIES - 1,
+          (UBaseType_t)configMAX_PRIORITIES - DRAW_PRIO,
           (TaskHandle_t *const)&_drawTask,
           (const BaseType_t)drawAssignCore) != pdPASS)
   {
@@ -682,11 +715,11 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
     }
     if (jpegdraws[i].pPixels)
     {
-      debugf("#%d draw buffer allocated.", i);
+      log_i("#%d draw buffer allocated.", i);
     }
     else
     {
-      debugf("#%d draw buffer allocat failed.", i);
+      log_e("#%d draw buffer allocat failed.", i);
     }
   }
   debugln("Draw buffer allocated.");
@@ -814,20 +847,6 @@ bool mjpeg_draw_frame()
   // log_i("queue decode_task end");
 
   return true;
-}
-
-void CreateVideoQueues()
-{
-  videoSetQueue = xQueueCreate(10, sizeof(struct videoMessage));
-  videoGetQueue = xQueueCreate(10, sizeof(struct videoMessage));
-  if (!videoSetQueue || !videoGetQueue)
-  {
-    debugln("Failed to create video command queues");
-  }
-  else
-  {
-    debugln("Video command queues created successfully");
-  }
 }
 
 //****************************************************************************************

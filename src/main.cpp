@@ -39,8 +39,8 @@ unsigned long RightButtonsMillis = 0;
 
 TaskHandle_t inputHandle;
 
-Button LeftButton(BUTTON1);
-Button RightButton(BUTTON2);
+Button LeftButton(BUTTON1, 30);
+Button RightButton(BUTTON2, 30);
 
 Player player;
 
@@ -67,7 +67,7 @@ void setup()
   RightButton.begin();
   delay(100);
 
-  //xTaskCreatePinnedToCore(input_task, "Button Task", 4096, NULL, (UBaseType_t)configMAX_PRIORITIES - 1, &inputHandle, INPUTASSIGNCORE);
+  xTaskCreatePinnedToCore(input_task, "Button Task", 4096, NULL, (UBaseType_t)configMAX_PRIORITIES - AUDIO_PRIO, &inputHandle, INPUTASSIGNCORE);
 
   player.init();
 
@@ -87,8 +87,13 @@ void loop()
 
 void input_task(void *param)
 {
+  debugln("input Task ---->  start.");
+
   for (;;)
   {
+    if (task_response)
+      debugln("Input Task is running...");
+
     if (LeftButton.pressed())
     {
       debugln("Button pressed");
@@ -98,8 +103,7 @@ void input_task(void *param)
       if (current_video >= videoFiles.size())
         current_video = 0;
 
-      // if (current_audio >= audioFiles.size())
-      //   current_audio = 0;
+      task_response = true;
 
       player.stop();
       delay(100);

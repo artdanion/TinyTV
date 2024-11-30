@@ -28,6 +28,8 @@ extern std::vector<String> audioFiles;
 extern int current_video;
 extern int current_audio;
 
+extern bool task_response;
+
 extern unsigned long  total_read_video_ms;
 extern unsigned long  total_decode_video_ms;
 extern unsigned long  total_show_video_ms;

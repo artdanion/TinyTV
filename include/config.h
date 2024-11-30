@@ -15,6 +15,10 @@
 #define DRAWASSIGNCORE 0
 #define INPUTASSIGNCORE 1
 
+#define AUDIO_PRIO 1
+#define DECODE_PRIO 1
+#define DRAW_PRIO 2
+#define INPUT_PRIO 4
 
 #define DEBUG true
 
