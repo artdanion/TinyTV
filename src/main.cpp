@@ -67,7 +67,7 @@ void setup()
   RightButton.begin();
   delay(100);
 
-  xTaskCreatePinnedToCore(input_task, "Button Task", 4096, NULL, (UBaseType_t)configMAX_PRIORITIES - 1, &inputHandle, INPUTASSIGNCORE);
+  //xTaskCreatePinnedToCore(input_task, "Button Task", 4096, NULL, (UBaseType_t)configMAX_PRIORITIES - 1, &inputHandle, INPUTASSIGNCORE);
 
   player.init();
 
@@ -103,7 +103,7 @@ void input_task(void *param)
 
       player.stop();
       delay(100);
-      
+
       debugln("Starting player");
       debugln("next Video");
       player.start(videoFiles[current_video].c_str());

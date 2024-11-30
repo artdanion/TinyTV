@@ -528,17 +528,22 @@ void decode_task(void *arg)
   debugln("decode_task start.");
   while (true)
   {
+    debugln("Checking videoSetQueue for commands.");
     if (xQueueReceive(videoSetQueue, &videoRxTaskMessage, 0) == pdPASS)
     {
+      debugln("Received command in decode_task.");
       if (videoRxTaskMessage.cmd == SWITCH_VIDEO_FILE)
       {
+        debugln("Received SWITCH_VIDEO_FILE command.");
         _input = videoRxTaskMessage.input;
         videoTxTaskMessage.cmd = SWITCH_VIDEO_FILE;
         videoTxTaskMessage.ret = true;
         xQueueSend(videoGetQueue, &videoTxTaskMessage, portMAX_DELAY);
+        debugln("Switched video file.");
       }
     }
 
+    debugln("Checking decode queue for frames.");
     if (xQueueReceive(p->xqh, &mBuf, portMAX_DELAY))
     {
       unsigned long s = millis();
@@ -575,24 +580,25 @@ void draw_task(void *arg)
 struct videoMessage transmitReceiveVideo(struct videoMessage msg)
 {
   struct videoMessage videoRxMessage;
+  debugln("Sending video command.");
   xQueueSend(videoSetQueue, &msg, portMAX_DELAY);
+  debugln("Command sent to videoSetQueue.");
   if (xQueueReceive(videoGetQueue, &videoRxMessage, portMAX_DELAY) == pdPASS)
   {
     if (msg.cmd != videoRxMessage.cmd)
     {
       debugln("wrong reply from message queue");
     }
+    else
+    {
+      debugln("Received correct reply from message queue.");
+    }
+  }
+  else
+  {
+    debugln("Failed to receive reply from message queue.");
   }
   return videoRxMessage;
-}
-
-bool videoSwitchFile(Stream *newFile)
-{
-  struct videoMessage videoTxMessage;
-  videoTxMessage.cmd = SWITCH_VIDEO_FILE;
-  videoTxMessage.input = newFile;
-  struct videoMessage RX = transmitReceiveVideo(videoTxMessage);
-  return RX.ret;
 }
 
 bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDraw,
@@ -609,11 +615,11 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
     _mjpegBufs[i].buf = (uint8_t *)malloc(mjpegBufSize);
     if (_mjpegBufs[i].buf)
     {
-      // debugf("#%d decode buffer allocated.", i);
+      debugf("#%d decode buffer allocated.", i);
     }
     else
     {
-      // debugf("#%d decode buffer allocat failed.", i);
+      debugf("#%d decode buffer allocat failed.", i);
     }
   }
   _mjpeg_buf = _mjpegBufs[_mBufIdx].buf;
@@ -634,22 +640,39 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
   _pDecodeTask.xqh = xQueueCreate(NUMBER_OF_DECODE_BUFFER, sizeof(mjpegBuf));
   _pDecodeTask.drawFunc = queueDrawMCU;
 
-  xTaskCreatePinnedToCore(
-      (TaskFunction_t)decode_task,
-      (const char *const)"MJPEG decode Task",
-      (const uint32_t)2000,
-      (void *const)&_pDecodeTask,
-      (UBaseType_t)configMAX_PRIORITIES - 1,
-      (TaskHandle_t *const)&_decodeTask,
-      (const BaseType_t)decodeAssignCore);
-  xTaskCreatePinnedToCore(
-      (TaskFunction_t)draw_task,
-      (const char *const)"MJPEG Draw Task",
-      (const uint32_t)2000,
-      (void *const)&_pDrawTask,
-      (UBaseType_t)configMAX_PRIORITIES - 1,
-      (TaskHandle_t *const)&_drawTask,
-      (const BaseType_t)drawAssignCore);
+  debugln("Creating decode_task.");
+  if (xTaskCreatePinnedToCore(
+          (TaskFunction_t)decode_task,
+          (const char *const)"MJPEG decode Task",
+          (const uint32_t)5000,
+          (void *const)&_pDecodeTask,
+          (UBaseType_t)configMAX_PRIORITIES - 1,
+          (TaskHandle_t *const)&_decodeTask,
+          (const BaseType_t)decodeAssignCore) != pdPASS)
+  {
+    debugln("Failed to create decode_task.");
+  }
+  else
+  {
+    debugln("decode_task created successfully.");
+  }
+
+  debugln("Creating draw_task.");
+  if (xTaskCreatePinnedToCore(
+          (TaskFunction_t)draw_task,
+          (const char *const)"MJPEG Draw Task",
+          (const uint32_t)2000,
+          (void *const)&_pDrawTask,
+          (UBaseType_t)configMAX_PRIORITIES - 1,
+          (TaskHandle_t *const)&_drawTask,
+          (const BaseType_t)drawAssignCore) != pdPASS)
+  {
+    debugln("Failed to create draw_task.");
+  }
+  else
+  {
+    debugln("draw_task created successfully.");
+  }
 
   for (int i = 0; i < NUMBER_OF_DRAW_BUFFER; i++)
   {
@@ -659,16 +682,25 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
     }
     if (jpegdraws[i].pPixels)
     {
-      // debugf("#%d draw buffer allocated.", i);
+      debugf("#%d draw buffer allocated.", i);
     }
     else
     {
-      // debugf("#%d draw buffer allocat failed.", i);
+      debugf("#%d draw buffer allocat failed.", i);
     }
   }
   debugln("Draw buffer allocated.");
 
   return true;
+}
+
+bool videoSwitchFile(Stream *newFile)
+{
+  struct videoMessage videoTxMessage;
+  videoTxMessage.cmd = SWITCH_VIDEO_FILE;
+  videoTxMessage.input = newFile;
+  struct videoMessage RX = transmitReceiveVideo(videoTxMessage);
+  return RX.ret;
 }
 
 bool mjpeg_read_frame()
@@ -688,7 +720,8 @@ bool mjpeg_read_frame()
     {
       if ((_read_buf[i] == 0xFF) && (_read_buf[i + 1] == 0xD8)) // JPEG header
       {
-        // log_i("Found FFD8 at: %d.", i);
+        debugf("Found FFD8 at: %d.", i);
+        debugln();
         found_FFD8 = true;
       }
       ++i;
@@ -727,19 +760,20 @@ bool mjpeg_read_frame()
         }
       }
 
-      // log_i("i: %d", i);
+      debugf("i: %d", i);
+      debugln();
       memcpy(_mjpeg_buf + _mjpeg_buf_offset, _p, i);
       _mjpeg_buf_offset += i;
       int32_t o = _buf_read - i;
       if (o > 0)
       {
-        // log_i("o: %d", o);
+        debugf("o: %d", o);
         memcpy(_read_buf, _p + i, o);
         _buf_read = _input->readBytes(_read_buf + o, READ_BUFFER_SIZE - o);
         _p = _read_buf;
         _inputindex += _buf_read;
         _buf_read += o;
-        // log_i("_buf_read: %d", _buf_read);
+        debugf("_buf_read: %d", _buf_read);
       }
       else
       {
@@ -751,7 +785,8 @@ bool mjpeg_read_frame()
     }
     if (found_FFD9)
     {
-      // log_i("Found FFD9 at: %d.", _mjpeg_buf_offset);
+      debugf("Found FFD9 at: %d.", _mjpeg_buf_offset);
+      debugln();
       if (_mjpeg_buf_offset > _mjpegBufSize)
       {
         log_e("_mjpeg_buf_offset(%d) > _mjpegBufSize (%d)", _mjpeg_buf_offset, _mjpegBufSize);
@@ -785,6 +820,14 @@ void CreateVideoQueues()
 {
   videoSetQueue = xQueueCreate(10, sizeof(struct videoMessage));
   videoGetQueue = xQueueCreate(10, sizeof(struct videoMessage));
+  if (!videoSetQueue || !videoGetQueue)
+  {
+    debugln("Failed to create video command queues");
+  }
+  else
+  {
+    debugln("Video command queues created successfully");
+  }
 }
 
 //****************************************************************************************
