@@ -26,6 +26,17 @@ JPEGDEC _jpegDec;
 xQueueHandle _xqh;
 bool _useBigEndian;
 
+struct videoMessage
+{
+  int cmd;
+  Stream *input;
+  bool ret;
+};
+
+QueueHandle_t videoSetQueue;
+QueueHandle_t videoGetQueue;
+#define SWITCH_VIDEO_FILE 1
+
 JPEGDRAW jpegdraws[NUMBER_OF_DRAW_BUFFER];
 unsigned long total_read_video_ms = 0;
 unsigned long total_decode_video_ms = 0;
@@ -121,7 +132,7 @@ void Player::init()
 
 void Player::start(const std::string &videoFile)
 {
-  debugln("Starting new video playback");
+  debugln("\nStarting new video playback");
   debug_memory_usage();
 
   // Ensure the current playback is stopped
@@ -144,10 +155,12 @@ void Player::start(const std::string &videoFile)
   {
     debugln("Init video");
 
-    // Reinitialize the video setup with the new stream
-    _input = &vFile;                       // Update the input stream
-    _mjpeg_buf = _mjpegBufs[_mBufIdx].buf; // Reset the buffer pointer
-    _mjpeg_buf_offset = 0;                 // Reset the buffer offset
+    // Send a command to switch the video file
+    if (!videoSwitchFile(&vFile))
+    {
+      debugln("ERROR: Failed to switch video file");
+      return; // Exit if switching the video file fails
+    }
 
     debugln("Start play audio task");
 
@@ -509,28 +522,39 @@ void decode_task(void *arg)
 {
   paramDecodeTask *p = (paramDecodeTask *)arg;
   mjpegBuf *mBuf;
-  log_i("decode_task start.");
-  while (xQueueReceive(p->xqh, &mBuf, portMAX_DELAY))
+  struct videoMessage videoRxTaskMessage;
+  struct videoMessage videoTxTaskMessage;
+
+  debugln("decode_task start.");
+  while (true)
   {
-    // log_i("mBuf->size: %d", mBuf->size);
-    // log_i("mBuf->buf start: %X %X, end: %X, %X.", mBuf->buf[0], mBuf->buf[1], mBuf->buf[mBuf->size - 2], mBuf->buf[mBuf->size - 1]);
-    unsigned long s = millis();
-
-    _jpegDec.openRAM(mBuf->buf, mBuf->size, p->drawFunc);
-
-    // _jpegDec.setMaxOutputSize(MAXOUTPUTSIZE);
-    if (_useBigEndian)
+    if (xQueueReceive(videoSetQueue, &videoRxTaskMessage, 0) == pdPASS)
     {
-      _jpegDec.setPixelType(RGB565_BIG_ENDIAN);
+      if (videoRxTaskMessage.cmd == SWITCH_VIDEO_FILE)
+      {
+        _input = videoRxTaskMessage.input;
+        videoTxTaskMessage.cmd = SWITCH_VIDEO_FILE;
+        videoTxTaskMessage.ret = true;
+        xQueueSend(videoGetQueue, &videoTxTaskMessage, portMAX_DELAY);
+      }
     }
-    _jpegDec.setMaxOutputSize(MAXOUTPUTSIZE);
-    _jpegDec.decode(0, 0, 0);
-    _jpegDec.close();
 
-    total_decode_video_ms += millis() - s;
+    if (xQueueReceive(p->xqh, &mBuf, portMAX_DELAY))
+    {
+      unsigned long s = millis();
+      _jpegDec.openRAM(mBuf->buf, mBuf->size, p->drawFunc);
+      if (_useBigEndian)
+      {
+        _jpegDec.setPixelType(RGB565_BIG_ENDIAN);
+      }
+      _jpegDec.setMaxOutputSize(MAXOUTPUTSIZE);
+      _jpegDec.decode(0, 0, 0);
+      _jpegDec.close();
+      total_decode_video_ms += millis() - s;
+    }
   }
   vQueueDelete(p->xqh);
-  log_i("decode_task end.");
+  debugln("decode_task end.");
   vTaskDelete(NULL);
 }
 
@@ -538,16 +562,37 @@ void draw_task(void *arg)
 {
   paramDrawTask *p = (paramDrawTask *)arg;
   JPEGDRAW *pDraw;
-  log_i("draw_task start.");
+  debugln("draw_task start.");
   while (xQueueReceive(p->xqh, &pDraw, portMAX_DELAY))
   {
-    // log_i("draw_task work start: x: %d, y: %d, iWidth: %d, iHeight: %d.", pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight);
     p->drawFunc(pDraw);
-    // log_i("draw_task work end.");
   }
   vQueueDelete(p->xqh);
-  log_i("draw_task end.");
+  debugln("draw_task end.");
   vTaskDelete(NULL);
+}
+
+struct videoMessage transmitReceiveVideo(struct videoMessage msg)
+{
+  struct videoMessage videoRxMessage;
+  xQueueSend(videoSetQueue, &msg, portMAX_DELAY);
+  if (xQueueReceive(videoGetQueue, &videoRxMessage, portMAX_DELAY) == pdPASS)
+  {
+    if (msg.cmd != videoRxMessage.cmd)
+    {
+      debugln("wrong reply from message queue");
+    }
+  }
+  return videoRxMessage;
+}
+
+bool videoSwitchFile(Stream *newFile)
+{
+  struct videoMessage videoTxMessage;
+  videoTxMessage.cmd = SWITCH_VIDEO_FILE;
+  videoTxMessage.input = newFile;
+  struct videoMessage RX = transmitReceiveVideo(videoTxMessage);
+  return RX.ret;
 }
 
 bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDraw,
@@ -557,19 +602,22 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
   _mjpegBufSize = mjpegBufSize;
   _useBigEndian = useBigEndian;
 
+  CreateVideoQueues(); // Initialize video command queues
+
   for (int i = 0; i < NUMBER_OF_DECODE_BUFFER; ++i)
   {
     _mjpegBufs[i].buf = (uint8_t *)malloc(mjpegBufSize);
     if (_mjpegBufs[i].buf)
     {
-      log_i("#%d decode buffer allocated.", i);
+      // debugf("#%d decode buffer allocated.", i);
     }
     else
     {
-      log_e("#%d decode buffer allocat failed.", i);
+      // debugf("#%d decode buffer allocat failed.", i);
     }
   }
   _mjpeg_buf = _mjpegBufs[_mBufIdx].buf;
+  debugln("Decode buffer allocated.");
 
   if (!_read_buf)
   {
@@ -577,7 +625,7 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
   }
   if (_read_buf)
   {
-    log_i("Read buffer allocated.");
+    debugln("Read buffer allocated.");
   }
 
   _xqh = xQueueCreate(NUMBER_OF_DRAW_BUFFER, sizeof(JPEGDRAW));
@@ -611,13 +659,14 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
     }
     if (jpegdraws[i].pPixels)
     {
-      log_i("#%d draw buffer allocated.", i);
+      // debugf("#%d draw buffer allocated.", i);
     }
     else
     {
-      log_e("#%d draw buffer allocat failed.", i);
+      // debugf("#%d draw buffer allocat failed.", i);
     }
   }
+  debugln("Draw buffer allocated.");
 
   return true;
 }
@@ -730,6 +779,12 @@ bool mjpeg_draw_frame()
   // log_i("queue decode_task end");
 
   return true;
+}
+
+void CreateVideoQueues()
+{
+  videoSetQueue = xQueueCreate(10, sizeof(struct videoMessage));
+  videoGetQueue = xQueueCreate(10, sizeof(struct videoMessage));
 }
 
 //****************************************************************************************

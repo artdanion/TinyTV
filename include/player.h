@@ -49,7 +49,6 @@ enum : uint8_t
   CONNECTTOHOST,
   CONNECTTOSD
 };
-
 typedef struct
 {
   int32_t size;
@@ -103,6 +102,9 @@ bool audioConnecttohost(const char *host);
 bool audioConnecttoSD(const char *filename);
 
 // decode and draw task
+void CreateVideoQueues();
+struct videoMessage transmitReceiveVideo(struct videoMessage msg);
+bool videoSwitchFile(Stream *newFile);
 int queueDrawMCU(JPEGDRAW *pDraw);
 void decode_task(void *arg);
 void draw_task(void *arg);
