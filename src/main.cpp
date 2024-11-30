@@ -56,7 +56,7 @@ void setup()
 
   delay(5000);
 
-  esp_log_level_set("*", ESP_LOG_NONE);
+  //esp_log_level_set("*", ESP_LOG_NONE);
 
 #ifdef GFX_BL
   pinMode(GFX_BL, OUTPUT);
@@ -73,8 +73,8 @@ void setup()
 
   delay(100);
 
-  current_video++;
-  current_audio++;
+  // current_video++;
+  // current_audio++;
 
   player.start(videoFiles[current_video].c_str());
   player.setVolume(15);
