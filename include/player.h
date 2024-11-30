@@ -28,14 +28,27 @@ extern std::vector<String> audioFiles;
 extern int current_video;
 extern int current_audio;
 
-extern struct audioMessage{
-    uint8_t     cmd;
-    const char* txt;
-    uint32_t    value;
-    uint32_t    ret;
+extern unsigned long  total_read_video_ms;
+extern unsigned long  total_decode_video_ms;
+extern unsigned long  total_show_video_ms;
+extern unsigned long  total_read_audio_ms;
+extern unsigned long  total_play_audio_ms;
+
+extern struct audioMessage
+{
+  uint8_t cmd;
+  const char *txt;
+  uint32_t value;
+  uint32_t ret;
 } audioTxMessage, audioRxMessage;
 
-enum : uint8_t { SET_VOLUME, GET_VOLUME, CONNECTTOHOST, CONNECTTOSD };
+enum : uint8_t
+{
+  SET_VOLUME,
+  GET_VOLUME,
+  CONNECTTOHOST,
+  CONNECTTOSD
+};
 
 typedef struct
 {
@@ -56,28 +69,26 @@ typedef struct
   JPEG_DRAW_CALLBACK *drawFunc;
 } paramDecodeTask;
 
-class Player {
+class Player
+{
 public:
   Player();
   void init();
-  void initTasksAndBuffers();
   void start(const std::string &videoFile);
   void stop();
   void setVolume(int volume);
+  void showStats();
 
 private:
   File vFile;
   File aFile;
   bool vFileOpen;
   bool aFileOpen;
-  unsigned long start_ms;
-  unsigned long curr_ms;
-  unsigned long next_frame_ms;
-  unsigned long next_frame;
-  unsigned long total_read_video_ms;
-  unsigned long total_decode_video_ms;
-  unsigned long skipped_frames;
-
+  uint64_t start_ms;
+  uint64_t curr_ms;
+  uint64_t next_frame_ms;
+  int next_frame;
+  int skipped_frames;
   void debug_memory_usage();
 };
 
@@ -88,8 +99,8 @@ void audioInit();
 audioMessage transmitReceive(audioMessage msg);
 void audioSetVolume(uint8_t vol);
 uint8_t audioGetVolume();
-bool audioConnecttohost(const char* host);
-bool audioConnecttoSD(const char* filename);
+bool audioConnecttohost(const char *host);
+bool audioConnecttoSD(const char *filename);
 
 // decode and draw task
 int queueDrawMCU(JPEGDRAW *pDraw);

@@ -98,16 +98,15 @@ void input_task(void *param)
       if (current_video >= videoFiles.size())
         current_video = 0;
 
-      if (current_audio >= audioFiles.size())
-        current_audio = 0;
-
-      debugln("Stopping player");
+      // if (current_audio >= audioFiles.size())
+      //   current_audio = 0;
 
       player.stop();
-      delay(200);
+      delay(100);
+      
       debugln("Starting player");
-      player.start(videoFiles[current_video].c_str());
       debugln("next Video");
+      player.start(videoFiles[current_video].c_str());
     }
 
     if (LeftButton.released())

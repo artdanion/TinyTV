@@ -49,20 +49,21 @@ int32_t _remain = 0;
 mjpegBuf _mjpegBufs[NUMBER_OF_DECODE_BUFFER];
 
 /* audio task*/
+TaskHandle_t _audioTask;
 QueueHandle_t audioSetQueue = NULL;
 QueueHandle_t audioGetQueue = NULL;
 struct audioMessage audioRxMessage;
 struct audioMessage audioTxMessage;
 
-static unsigned long total_read_audio_ms = 0;
-static unsigned long total_decode_audio_ms = 0;
-static unsigned long total_play_audio_ms = 0;
+unsigned long total_read_audio_ms = 0;
+unsigned long total_decode_audio_ms = 0;
+unsigned long total_play_audio_ms = 0;
 
 /* variables */
 bool sdcard = false;
-static int next_frame = 0;
-static int skipped_frames = 0;
-static unsigned long start_ms, curr_ms, next_frame_ms;
+int next_frame = 0;
+int skipped_frames = 0;
+unsigned long start_ms, curr_ms, next_frame_ms;
 
 Arduino_DataBus *bus = NULL;
 Arduino_GFX *gfx = NULL;
@@ -79,8 +80,6 @@ Player::Player() : vFileOpen(false),
                    curr_ms(0),
                    next_frame_ms(0),
                    next_frame(0),
-                   total_read_video_ms(0),
-                   total_decode_video_ms(0),
                    skipped_frames(0) {}
 
 void Player::init()
@@ -126,7 +125,7 @@ void Player::start(const std::string &videoFile)
   debug_memory_usage();
 
   // Ensure the current playback is stopped
-  stop();
+  // stop();
 
   uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
   debugf("SD Card Size: %lluMB\n", cardSize);
@@ -139,15 +138,16 @@ void Player::start(const std::string &videoFile)
   if (!vFile || vFile.isDirectory())
   {
     debugln("ERROR: Failed to open file for reading");
+    return; // Exit if file opening fails
   }
   else
   {
     debugln("Init video");
 
     // Reinitialize the video setup with the new stream
-    _input = &vFile; // Update the input stream
+    _input = &vFile;                       // Update the input stream
     _mjpeg_buf = _mjpegBufs[_mBufIdx].buf; // Reset the buffer pointer
-    _mjpeg_buf_offset = 0; // Reset the buffer offset
+    _mjpeg_buf_offset = 0;                 // Reset the buffer offset
 
     debugln("Start play audio task");
 
@@ -165,7 +165,8 @@ void Player::start(const std::string &videoFile)
 
     start_ms = millis();
     curr_ms = millis();
-    next_frame_ms = start_ms + (++next_frame * 1000 / FPS / 2);
+    next_frame_ms = start_ms + (1000 / FPS); // Calculate the time for the next frame
+    next_frame = 1;                          // Start with the first frame
 
     while (vFile.available() && mjpeg_read_frame())
     { // Read video
@@ -182,18 +183,21 @@ void Player::start(const std::string &videoFile)
       else
       {
         ++skipped_frames;
-        // debugln("Skip frame");
       }
 
+      // Wait until it's time for the next frame
       while (millis() < next_frame_ms)
       {
         vTaskDelay(pdMS_TO_TICKS(1));
       }
 
       curr_ms = millis();
-      next_frame_ms = start_ms + (++next_frame * 1000 / FPS);
+      next_frame_ms = curr_ms + (1000 / FPS); // Calculate the time for the next frame
+      ++next_frame;                           // Increment the frame counter
     }
     debugln("AV end");
+    total_play_audio_ms = audio.getTotalPlayingTime();
+    audio.stopSong();
     showStats();
   }
 }
@@ -202,9 +206,7 @@ void Player::stop()
 {
   debug_memory_usage();
   debugln("Stopping player");
-
-  // Stop the AAC decoder
-  delay(20);
+  audio.stopSong();
 
   // Close the video file
   if (vFileOpen)
@@ -239,6 +241,112 @@ void Player::setVolume(int volume)
   audio.setVolume(volume);
 }
 
+void Player::showStats()
+{
+  gfx->fillScreen(BLACK);
+
+  int time_used = millis() - start_ms;
+  int total_frames = next_frame - 1;
+
+  int played_frames = total_frames - skipped_frames;
+  float fps = 1000.0 * played_frames / time_used;
+
+  debugln("Show Stats");
+
+  debugf("Played frames: %d\n", played_frames);
+  debugf("Skipped frames: %d (%0.1f %%)\n", skipped_frames, 100.0 * skipped_frames / total_frames);
+  debugf("Time used: %d ms\n", time_used);
+  debugf("Expected FPS: %d\n", FPS);
+  debugf("Actual FPS: %0.1f\n", fps);
+  debugf("Read audio: %lu ms (%0.1f %%)\n", total_read_audio_ms, 100.0 * total_read_audio_ms / time_used);
+  debugf("Play audio: %lu ms (%0.1f %%)\n", total_play_audio_ms, 100.0 * total_play_audio_ms / time_used);
+  debugf("Read video: %lu ms (%0.1f %%)\n", total_read_video_ms, 100.0 * total_read_video_ms / time_used);
+  debugf("Decode video: %lu ms (%0.1f %%)\n", total_decode_video_ms, 100.0 * total_decode_video_ms / time_used);
+  debugf("Show video: %lu ms (%0.1f %%)\n", total_show_video_ms, 100.0 * total_show_video_ms / time_used);
+
+  gfx->setCursor(0, 50);
+  gfx->setTextColor(WHITE);
+  gfx->printf("Played frames: %d\n", played_frames);
+  delay(50);
+  gfx->printf("Skipped frames: %d (%0.1f %%)\n", skipped_frames, 100.0 * skipped_frames / total_frames);
+  delay(50);
+  gfx->printf("Time used: %d ms\n", time_used);
+  delay(50);
+  gfx->printf("Expected FPS: %d\n", FPS);
+  delay(50);
+  gfx->printf("Actual FPS: %0.1f\n\n", fps);
+  delay(50);
+
+  int16_t r1 = ((gfx->height() - CHART_MARGIN - CHART_MARGIN) / 2);
+  int16_t r2 = r1 / 2;
+  int16_t cx = gfx->width() - r1 - 10;
+  int16_t cy = r1 + CHART_MARGIN;
+
+  float arc_start1 = 0;
+  float arc_end1 = arc_start1 + max(2.0, 360.0 * total_read_audio_ms / time_used);
+  for (int i = arc_start1 + 1; i < arc_end1; i += 2)
+  {
+    gfx->fillArc(cx, cy, r1, r2, arc_start1 - 90.0, i - 90.0, LEGEND_A_COLOR);
+    delay(5);
+  }
+  gfx->fillArc(cx, cy, r1, r2, arc_start1 - 90.0, arc_end1 - 90.0, LEGEND_A_COLOR);
+  delay(50);
+  gfx->setTextColor(LEGEND_A_COLOR);
+  gfx->printf("Read audio: %lu ms (%0.1f %%)\n", total_read_audio_ms, 100.0 * total_read_audio_ms / time_used);
+  delay(50);
+
+  float arc_start2 = arc_end1;
+  float arc_end2 = arc_start2 + max(2.0, 360.0 * total_decode_audio_ms / time_used);
+  for (int i = arc_start2 + 1; i < arc_end2; i += 2)
+  {
+    gfx->fillArc(cx, cy, r1, r2, arc_start2 - 90.0, i - 90.0, LEGEND_B_COLOR);
+    delay(5);
+  }
+  gfx->fillArc(cx, cy, r1, r2, arc_start2 - 90.0, arc_end2 - 90.0, LEGEND_B_COLOR);
+  delay(50);
+  gfx->setTextColor(LEGEND_J_COLOR);
+  gfx->printf("Play audio: %lu ms (%0.1f %%)\n", total_play_audio_ms, 100.0 * total_play_audio_ms / time_used);
+  delay(50);
+
+  float arc_start3 = arc_end2;
+  float arc_end3 = arc_start3 + max(2.0, 360.0 * total_read_video_ms / time_used);
+  for (int i = arc_start3 + 1; i < arc_end3; i += 2)
+  {
+    gfx->fillArc(cx, cy, r1, r2, arc_start3 - 90.0, i - 90.0, LEGEND_C_COLOR);
+    delay(5);
+  }
+  gfx->fillArc(cx, cy, r1, r2, arc_start3 - 90.0, arc_end3 - 90.0, LEGEND_C_COLOR);
+  delay(50);
+  gfx->setTextColor(LEGEND_C_COLOR);
+  gfx->printf("Read video: %lu ms (%0.1f %%)\n", total_read_video_ms, 100.0 * total_read_video_ms / time_used);
+  delay(50);
+
+  float arc_start4 = arc_end3;
+  float arc_end4 = arc_start4 + max(2.0, 360.0 * total_show_video_ms / time_used);
+  for (int i = arc_start4 + 1; i < arc_end4; i += 2)
+  {
+    gfx->fillArc(cx, cy, r1, r2, arc_start4 - 90.0, i - 90.0, LEGEND_D_COLOR);
+    delay(5);
+  }
+  gfx->fillArc(cx, cy, r1, r2, arc_start4 - 90.0, arc_end4 - 90.0, LEGEND_D_COLOR);
+  delay(50);
+  gfx->setTextColor(LEGEND_D_COLOR);
+  gfx->printf("Show video: %lu ms (%0.1f %%)\n", total_show_video_ms, 100.0 * total_show_video_ms / time_used);
+  delay(50);
+
+  float arc_start5 = 0;
+  float arc_end5 = arc_start5 + max(2.0, 360.0 * total_decode_video_ms / time_used);
+  for (int i = arc_start5 + 1; i < arc_end5; i += 2)
+  {
+    gfx->fillArc(cx, cy, r2, 0, arc_start5 - 90.0, i - 90.0, LEGEND_E_COLOR);
+    delay(5);
+  }
+  gfx->fillArc(cx, cy, r2, 0, arc_start5 - 90.0, arc_end5 - 90.0, LEGEND_E_COLOR);
+  delay(50);
+  gfx->setTextColor(LEGEND_E_COLOR);
+  gfx->printf("Decode video: %lu ms (%0.1f %%)\n", total_decode_video_ms, 100.0 * total_decode_video_ms / time_used);
+}
+
 //****************************************************************************************
 //                                   A U D I O _ T A S K                                 *
 //****************************************************************************************
@@ -252,13 +360,13 @@ void CreateQueues()
 void audioInit()
 {
   xTaskCreatePinnedToCore(
-      audioTask,             /* Function to implement the task */
-      "audioplay",           /* Name of the task */
-      5000,                  /* Stack size in words */
-      NULL,                  /* Task input parameter */
-      2 | portPRIVILEGE_BIT, /* Priority of the task */
-      NULL,                  /* Task handle. */
-      AUDIOASSIGNCORE        /* Core where the task should run */
+      audioTask,                        /* Function to implement the task */
+      "audioplay",                      /* Name of the task */
+      5000,                             /* Stack size in words */
+      NULL,                             /* Task input parameter */
+      2 | portPRIVILEGE_BIT,            /* Priority of the task */
+      (TaskHandle_t *const)&_audioTask, /* Task handle. */
+      AUDIOASSIGNCORE                   /* Core where the task should run */
   );
 }
 
@@ -342,6 +450,14 @@ void audioSetVolume(uint8_t vol)
   audioMessage RX = transmitReceive(audioTxMessage);
 }
 
+bool audioConnecttoSD(const char *filename)
+{
+  audioTxMessage.cmd = CONNECTTOSD;
+  audioTxMessage.txt = filename;
+  audioMessage RX = transmitReceive(audioTxMessage);
+  return RX.ret;
+}
+
 uint8_t audioGetVolume()
 {
   audioTxMessage.cmd = GET_VOLUME;
@@ -353,14 +469,6 @@ bool audioConnecttohost(const char *host)
 {
   audioTxMessage.cmd = CONNECTTOHOST;
   audioTxMessage.txt = host;
-  audioMessage RX = transmitReceive(audioTxMessage);
-  return RX.ret;
-}
-
-bool audioConnecttoSD(const char *filename)
-{
-  audioTxMessage.cmd = CONNECTTOSD;
-  audioTxMessage.txt = filename;
   audioMessage RX = transmitReceive(audioTxMessage);
   return RX.ret;
 }
@@ -731,119 +839,4 @@ void listFilesByExtension(fs::FS &fs, std::vector<String> &videoFiles, std::vect
   std::map<std::string, std::string> fileMap; // Map to store filenames without extensions and their corresponding .aac files
   scanDirectory(fs, "/", fileMap);
   populateVectorsFromMap(fileMap, videoFiles, audioFiles);
-}
-
-//****************************************************************************************
-//                                  SHOW STATS FUNCTION                                  *
-//****************************************************************************************
-
-void showStats()
-{
-  gfx->fillScreen(BLACK);
-
-  int time_used = millis() - start_ms;
-  int total_frames = next_frame - 1;
-
-  int played_frames = total_frames - skipped_frames;
-  float fps = 1000.0 * played_frames / time_used;
-  total_decode_audio_ms -= total_play_audio_ms;
-
-  debugln("Show Stats");
-
-  debugf("Played frames: %d\n", played_frames);
-  debugf("Skipped frames: %d (%0.1f %%)\n", skipped_frames, 100.0 * skipped_frames / total_frames);
-  debugf("Time used: %d ms\n", time_used);
-  debugf("Expected FPS: %d\n", FPS);
-  debugf("Actual FPS: %0.1f\n", fps);
-  debugf("Read audio: %lu ms (%0.1f %%)\n", total_read_audio_ms, 100.0 * total_read_audio_ms / time_used);
-  debugf("Decode audio: %lu ms (%0.1f %%)\n", total_decode_audio_ms, 100.0 * total_decode_audio_ms / time_used);
-  debugf("Play audio: %lu ms (%0.1f %%)\n", total_play_audio_ms, 100.0 * total_play_audio_ms / time_used);
-  debugf("Read video: %lu ms (%0.1f %%)\n", total_read_video_ms, 100.0 * total_read_video_ms / time_used);
-  debugf("Decode video: %lu ms (%0.1f %%)\n", total_decode_video_ms, 100.0 * total_decode_video_ms / time_used);
-  debugf("Show video: %lu ms (%0.1f %%)\n", total_show_video_ms, 100.0 * total_show_video_ms / time_used);
-
-  gfx->setCursor(0, 50);
-  gfx->setTextColor(WHITE);
-  gfx->printf("Played frames: %d\n", played_frames);
-  delay(50);
-  gfx->printf("Skipped frames: %d (%0.1f %%)\n", skipped_frames, 100.0 * skipped_frames / total_frames);
-  delay(50);
-  gfx->printf("Time used: %d ms\n", time_used);
-  delay(50);
-  gfx->printf("Expected FPS: %d\n", FPS);
-  delay(50);
-  gfx->printf("Actual FPS: %0.1f\n\n", fps);
-  delay(50);
-
-  int16_t r1 = ((gfx->height() - CHART_MARGIN - CHART_MARGIN) / 2);
-  int16_t r2 = r1 / 2;
-  int16_t cx = gfx->width() - r1 - 10;
-  int16_t cy = r1 + CHART_MARGIN;
-
-  float arc_start1 = 0;
-  float arc_end1 = arc_start1 + max(2.0, 360.0 * total_read_audio_ms / time_used);
-  for (int i = arc_start1 + 1; i < arc_end1; i += 2)
-  {
-    gfx->fillArc(cx, cy, r1, r2, arc_start1 - 90.0, i - 90.0, LEGEND_A_COLOR);
-    delay(5);
-  }
-  gfx->fillArc(cx, cy, r1, r2, arc_start1 - 90.0, arc_end1 - 90.0, LEGEND_A_COLOR);
-  delay(50);
-  gfx->setTextColor(LEGEND_A_COLOR);
-  gfx->printf("Read audio: %lu ms (%0.1f %%)\n", total_read_audio_ms, 100.0 * total_read_audio_ms / time_used);
-  delay(50);
-
-  float arc_start2 = arc_end1;
-  float arc_end2 = arc_start2 + max(2.0, 360.0 * total_decode_audio_ms / time_used);
-  for (int i = arc_start2 + 1; i < arc_end2; i += 2)
-  {
-    gfx->fillArc(cx, cy, r1, r2, arc_start2 - 90.0, i - 90.0, LEGEND_B_COLOR);
-    delay(5);
-  }
-  gfx->fillArc(cx, cy, r1, r2, arc_start2 - 90.0, arc_end2 - 90.0, LEGEND_B_COLOR);
-  delay(50);
-  gfx->setTextColor(LEGEND_B_COLOR);
-  gfx->printf("Decode audio: %lu ms (%0.1f %%)\n", total_decode_audio_ms, 100.0 * total_decode_audio_ms / time_used);
-  delay(50);
-  gfx->setTextColor(LEGEND_J_COLOR);
-  gfx->printf("Play audio: %lu ms (%0.1f %%)\n", total_play_audio_ms, 100.0 * total_play_audio_ms / time_used);
-  delay(50);
-
-  float arc_start3 = arc_end2;
-  float arc_end3 = arc_start3 + max(2.0, 360.0 * total_read_video_ms / time_used);
-  for (int i = arc_start3 + 1; i < arc_end3; i += 2)
-  {
-    gfx->fillArc(cx, cy, r1, r2, arc_start3 - 90.0, i - 90.0, LEGEND_C_COLOR);
-    delay(5);
-  }
-  gfx->fillArc(cx, cy, r1, r2, arc_start3 - 90.0, arc_end3 - 90.0, LEGEND_C_COLOR);
-  delay(50);
-  gfx->setTextColor(LEGEND_C_COLOR);
-  gfx->printf("Read video: %lu ms (%0.1f %%)\n", total_read_video_ms, 100.0 * total_read_video_ms / time_used);
-  delay(50);
-
-  float arc_start4 = arc_end3;
-  float arc_end4 = arc_start4 + max(2.0, 360.0 * total_show_video_ms / time_used);
-  for (int i = arc_start4 + 1; i < arc_end4; i += 2)
-  {
-    gfx->fillArc(cx, cy, r1, r2, arc_start4 - 90.0, i - 90.0, LEGEND_D_COLOR);
-    delay(5);
-  }
-  gfx->fillArc(cx, cy, r1, r2, arc_start4 - 90.0, arc_end4 - 90.0, LEGEND_D_COLOR);
-  delay(50);
-  gfx->setTextColor(LEGEND_D_COLOR);
-  gfx->printf("Show video: %lu ms (%0.1f %%)\n", total_show_video_ms, 100.0 * total_show_video_ms / time_used);
-  delay(50);
-
-  float arc_start5 = 0;
-  float arc_end5 = arc_start5 + max(2.0, 360.0 * total_decode_video_ms / time_used);
-  for (int i = arc_start5 + 1; i < arc_end5; i += 2)
-  {
-    gfx->fillArc(cx, cy, r2, 0, arc_start5 - 90.0, i - 90.0, LEGEND_E_COLOR);
-    delay(5);
-  }
-  gfx->fillArc(cx, cy, r2, 0, arc_start5 - 90.0, arc_end5 - 90.0, LEGEND_E_COLOR);
-  delay(50);
-  gfx->setTextColor(LEGEND_E_COLOR);
-  gfx->printf("Decode video: %lu ms (%0.1f %%)\n", total_decode_video_ms, 100.0 * total_decode_video_ms / time_used);
 }
