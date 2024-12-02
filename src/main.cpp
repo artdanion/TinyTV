@@ -1,132 +1,82 @@
-/***
- * based on the project of: https://github.com/galbraithmedia1/Mini-Tv-ESP32
- *
- * Changes:
- *
- * 2024 artdanion
- *
- */
-
-// Version for ESP32-S3 Dev Board with SD_MMC Card
-
-//  Audio and video code
-
-// ffmpeg -i  office1.mp4 -ar 44100 -ac 1 -ab 24k -filter:a loudnorm -filter:a "volume=-5dB" office1.aac
-// ffmpeg -i office1.mp4 -vf "fps=25,scale=-1:240:flags=lanczos,crop=288:in_h:(in_w-288)/2:0" -q:v 11 office1.mjpeg
-
-#include <Arduino.h>
 #include <WiFi.h>
 #include <FS.h>
-#include <vector>
-#include <map>
-#include <string>
-#include <esp_log.h>
-#include <esp_task_wdt.h>
-#include <esp_heap_caps.h>
-#include "config.h"
-#include <player.h>
+#include <SD_MMC.h>
+#include <JPEGDEC.h>
 #include <Audio.h>
-#include <Button.h>
+#include <Arduino_GFX_Library.h>
+#include "player.h"
 
-/* functions */
-void input_task(void *param);
+#define DECODEASSIGNCORE 0
+#define DRAWASSIGNCORE 0
 
-bool is_muted = false;
-float volume_level = 0.5; // Startlautstärke
+#define READ_BUFFER_SIZE 4096
+#define MAXOUTPUTSIZE (288 / 3 / 16)
+#define NUMBER_OF_DECODE_BUFFER 4
+#define NUMBER_OF_DRAW_BUFFER 24
 
-unsigned long LeftButtonsMillis = 0;
-unsigned long RightButtonsMillis = 0;
+#define FPS 25
+#define MJPEG_BUFFER_SIZE (288 * 250 * 2 / 8)
 
-TaskHandle_t inputHandle;
+#define GFX_RST 48
+#define GFX_BL 42
+#define GFX_DC 40
+#define GFX_CS 41
+#define GFX_SCK 21
+#define GFX_MOSI 47
 
-Button LeftButton(BUTTON1, 30);
-Button RightButton(BUTTON2, 30);
+#define SD_MMC_CLK 3
+#define SD_MMC_CMD 4
+#define SD_MMC_D0 2
+#define SD_MMC_D1 1
+#define SD_MMC_D2 6
+#define SD_MMC_D3 5
 
-Player player;
+Arduino_DataBus *bus = new Arduino_ESP32SPIDMA(GFX_DC, GFX_CS, GFX_SCK, GFX_MOSI, GFX_NOT_DEFINED, HSPI, false);
+Arduino_GFX *gfx = new Arduino_ST7789(bus, GFX_RST, 1 /* rotation */, true /* IPS */, 240 /* width */, 288 /* height */, 0 /* col offset 1 */, 20 /* row offset 1 */, 0 /* col offset 2 */, 12 /* row offset 2 */);
 
-void setup()
-{
-  disableCore0WDT();
-  disableCore1WDT();
+VideoPlayer *videoPlayer;
 
+void videoTask(void *param) {
+  videoPlayer->task();
+}
+
+void setup() {
   WiFi.mode(WIFI_OFF);
 
-  Serial.setTxTimeoutMs(5); // set USB CDC Time TX
+  Serial.setTxTimeoutMs(5);  // set USB CDC Time TX
   Serial.begin(115200);
 
-  delay(5000);
+  Serial.println("Init FS");
 
-  //esp_log_level_set("*", ESP_LOG_NONE);
-
-#ifdef GFX_BL
-  pinMode(GFX_BL, OUTPUT);
-  digitalWrite(GFX_BL, HIGH);
-#endif
-
-  LeftButton.begin();
-  RightButton.begin();
-  delay(100);
-
-  xTaskCreatePinnedToCore(input_task, "Button Task", 4096, NULL, (UBaseType_t)configMAX_PRIORITIES - AUDIO_PRIO, &inputHandle, INPUTASSIGNCORE);
-
-  player.init();
-
-  delay(100);
-
-  // current_video++;
-  // current_audio++;
-
-  player.start(videoFiles[current_video].c_str());
-  player.setVolume(15);
-}
-
-void loop()
-{
-  esp_task_wdt_reset(); // Reset watchdog in case of long operations
-}
-
-void input_task(void *param)
-{
-  debugln("input Task ---->  start.");
-
-  for (;;)
-  {
-    if (task_response)
-      debugln("Input Task is running...");
-
-    if (LeftButton.pressed())
-    {
-      debugln("Button pressed");
-      current_video++;
-      current_audio++;
-
-      if (current_video >= videoFiles.size())
-        current_video = 0;
-
-      task_response = true;
-
-      player.stop();
-      delay(100);
-
-      debugln("Starting player");
-      debugln("next Video");
-      player.start(videoFiles[current_video].c_str());
-    }
-
-    if (LeftButton.released())
-    {
-      debugln("Button released");
-      if (millis() - LeftButtonsMillis > 1000)
-      {
-        is_muted = !is_muted;
-        debugln("mute");
-      }
-      if (is_muted)
-        player.setVolume(0);
-      else
-        player.setVolume(15);
-      LeftButtonsMillis = 0;
-    }
-    vTaskDelay(pdMS_TO_TICKS(20)); // Delay for 20 milliseconds
+  if (!SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0, SD_MMC_D1, SD_MMC_D2, SD_MMC_D3)) {
+    Serial.println("Pin change failed!");
+    return;
   }
+
+  // SD-Karte initialisieren
+  if ((!SD_MMC.begin("/root", false)) && (!SD_MMC.begin("/root", false)) && (!SD_MMC.begin("/root", false)) && (!SD_MMC.begin("/root", false))) {
+    Serial.println("ERROR: File system mount failed!");
+  }
+
+  // VideoPlayer initialisieren
+  videoPlayer = new VideoPlayer(gfx, MJPEG_BUFFER_SIZE, READ_BUFFER_SIZE);
+  videoPlayer->init();
+
+  // Task erstellen
+  xTaskCreate(videoTask, "Video Task", 8192, nullptr, 1, nullptr);
+
+  // Video abspielen
+  videoPlayer->play("/rick.mjpeg");
+}
+
+void loop() {
+  delay(6000);
+
+  videoPlayer->stop();
+
+  videoPlayer->play("/rick.mjpeg");
+  delay(6000);
+
+  videoPlayer->stop();
+  delay(6000);
 }

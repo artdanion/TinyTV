@@ -1,959 +1,448 @@
 #include <Arduino.h>
-#include <SD_MMC.h>
-#include <esp_heap_caps.h>
-#include <string>
-#include <map>
-#include <vector>
-#include "driver/i2s.h"
-#include "player.h"
-#include "config.h"
-#include <Audio.h>
 #include <FS.h>
+#include <SD_MMC.h>
 #include <JPEGDEC.h>
 #include <Arduino_GFX_Library.h>
+#include <memory>
+#include "player.h"
 
-#define MAX_FRAME_SIZE 3200
+int VideoPlayer::_draw_queue_cnt = 0;
+VideoPlayer *VideoPlayer::instance = nullptr;
 
-std::vector<String> videoFiles;
-std::vector<String> audioFiles;
-
-int current_video = 0;
-int current_audio = 0;
-
-bool task_response = false;
-
-/* video task*/
-int _draw_queue_cnt = 0;
-JPEGDEC _jpegDec;
-xQueueHandle _xqh;
-bool _useBigEndian;
-
-struct videoMessage
+VideoPlayer::VideoPlayer(Arduino_GFX *gfxInstance, size_t mjpegBufferSize, size_t readBufferSize)
+    : gfx(gfxInstance), _mjpegBufSize(mjpegBufferSize), _readBufferSize(readBufferSize)
 {
-  int cmd;
-  Stream *input;
-  bool ret;
-};
+    _read_buf = std::make_unique<uint8_t[]>(readBufferSize);
+    _mjpeg_buf = std::make_unique<uint8_t[]>(mjpegBufferSize);
+    _input = nullptr;
+    _videoQueue = nullptr;
+    _frameIndex = 0;
+    _startTime = 0;
+    _useBigEndian = false;
+    _mjpeg_buf_offset = 0;
+    _inputindex = 0;
+    _buf_read = 0;
+    _remain = 0;
+    _mBufIdx = 0;
+    _decodeTask = nullptr;
+    _draw_task = nullptr;
+    _xqh = nullptr;
 
-QueueHandle_t videoSetQueue;
-QueueHandle_t videoGetQueue;
-#define SWITCH_VIDEO_FILE 1
-
-JPEGDRAW jpegdraws[NUMBER_OF_DRAW_BUFFER];
-unsigned long total_read_video_ms = 0;
-unsigned long total_decode_video_ms = 0;
-unsigned long total_show_video_ms = 0;
-
-Stream *_input;
-int32_t _mjpegBufSize;
-uint8_t *_read_buf;
-int32_t _mjpeg_buf_offset = 0;
-
-TaskHandle_t _decodeTask;
-TaskHandle_t _drawTask;
-paramDecodeTask _pDecodeTask;
-paramDrawTask _pDrawTask;
-uint8_t *_mjpeg_buf;
-uint8_t _mBufIdx = 0;
-
-int32_t _inputindex = 0;
-int32_t _buf_read;
-int32_t _remain = 0;
-mjpegBuf _mjpegBufs[NUMBER_OF_DECODE_BUFFER];
-
-/* audio task*/
-TaskHandle_t _audioTask;
-QueueHandle_t audioSetQueue = NULL;
-QueueHandle_t audioGetQueue = NULL;
-struct audioMessage audioRxMessage;
-struct audioMessage audioTxMessage;
-
-unsigned long total_read_audio_ms = 0;
-unsigned long total_decode_audio_ms = 0;
-unsigned long total_play_audio_ms = 0;
-
-/* variables */
-bool sdcard = false;
-int next_frame = 0;
-int skipped_frames = 0;
-unsigned long start_ms, curr_ms, next_frame_ms;
-
-Arduino_DataBus *bus = NULL;
-Arduino_GFX *gfx = NULL;
-Audio audio;
-
-//****************************************************************************************
-//                                   PLAYER - CLASS                                      *
-//****************************************************************************************
-
-// Constructor
-Player::Player() : vFileOpen(false),
-                   aFileOpen(false),
-                   start_ms(0),
-                   curr_ms(0),
-                   next_frame_ms(0),
-                   next_frame(0),
-                   skipped_frames(0) {}
-
-void Player::init()
-{
-  debug_memory_usage();
-  debugln("Init FS");
-
-  if (!SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0, SD_MMC_D1, SD_MMC_D2, SD_MMC_D3))
-  {
-    debugln("Pin change failed!");
-    return;
-  }
-
-  // Init Display
-  bus = new Arduino_ESP32SPIDMA(GFX_DC, GFX_CS, GFX_SCK, GFX_MOSI, GFX_NOT_DEFINED, HSPI, false);
-  gfx = new Arduino_ST7789(bus, GFX_RST, 1 /* rotation */, true /* IPS */, 240 /* width */, 288 /* height */, 0 /* col offset 1 */, 20 /* row offset 1 */, 0 /* col offset 2 */, 12 /* row offset 2 */);
-
-  gfx->begin(80000000);
-  gfx->fillScreen(BLACK);
-
-  if (!SD_MMC.begin())
-  {
-    debugln("SD Card initialization failed!");
-    return;
-  }
-  debugln("SD Card initialized.");
-
-  getFiles();
-
-  // Initialize tasks and buffers using mjpeg_setup
-  if (!mjpeg_setup(&vFile, MJPEG_BUFFER_SIZE, drawMCU, false /* useBigEndian */, DECODEASSIGNCORE, DRAWASSIGNCORE))
-  {
-    debugln("ERROR: Failed to initialize MJPEG setup");
-    return;
-  }
-
-  audioInit();
+    // Setze die statische Instanzvariable
+    instance = this;
 }
 
-void Player::start(const std::string &videoFile)
+VideoPlayer::~VideoPlayer()
 {
-  debugln("\nStarting new video playback");
-  debug_memory_usage();
+    stop();
+}
 
-  // Ensure the current playback is stopped
-  // stop();
-
-  uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
-  debugf("SD Card Size: %lluMB\n", cardSize);
-
-  debugln("Open MJPEG File: " + videoFiles[current_video]);
-
-  vFile = SD_MMC.open(videoFiles[current_video]);
-  vFileOpen = true;
-
-  if (!vFile || vFile.isDirectory())
-  {
-    debugln("ERROR: Failed to open file for reading");
-    return; // Exit if file opening fails
-  }
-  else
-  {
-    debugln("Init video");
-
-    // Send a command to switch the video file
-    if (!videoSwitchFile(&vFile))
+void VideoPlayer::init()
+{
+    _videoQueue = xQueueCreate(1, sizeof(File *));
+    if (!_videoQueue)
     {
-      debugln("ERROR: Failed to switch video file");
-      return; // Exit if switching the video file fails
+        Serial.println("Failed to create video queue");
+        return;
     }
 
-    debugln("Start play audio task");
+    gfx->begin(80000000);
+    gfx->fillScreen(BLACK);
 
-    if (audioFiles[current_audio] != "X")
+    Serial.println("VideoPlayer initialized.");
+}
+
+void VideoPlayer::play(const char *filename)
+{
+    _input = std::make_unique<File>(SD_MMC.open(filename, "r"));
+    if (!_input || !_input->available())
     {
-      audioConnecttoSD(audioFiles[current_audio].c_str());
-      debugln("Open Audio File: " + audioFiles[current_audio]);
+        Serial.println("Failed to open video file");
+        return;
     }
-    else
+
+    _frameIndex = 0;
+    _startTime = millis();
+
+    xQueueSend(_videoQueue, &_input, portMAX_DELAY);
+    Serial.printf("Playing video: %s\n", filename);
+}
+
+void VideoPlayer::stop()
+{
+    if (_input)
     {
-      debugln("No Sound");
+        _input->close();
+        _input.reset();
+    }
+    Serial.println("Video stopped");
+}
+
+bool VideoPlayer::readFrame()
+{
+    if (_inputindex == 0)
+    {
+        _buf_read = _input->readBytes(reinterpret_cast<char *>(_read_buf.get()), _readBufferSize);
+        _inputindex += _buf_read;
+    }
+    _mjpeg_buf_offset = 0;
+    int i = 0;
+    bool found_FFD8 = false;
+    while ((_buf_read > 0) && (!found_FFD8))
+    {
+        i = 0;
+        while ((i < _buf_read) && (!found_FFD8))
+        {
+            if ((_read_buf[i] == 0xFF) && (_read_buf[i + 1] == 0xD8)) // JPEG header
+            {
+                found_FFD8 = true;
+            }
+            ++i;
+        }
+        if (found_FFD8)
+        {
+            --i;
+        }
+        else
+        {
+            _buf_read = _input->readBytes(reinterpret_cast<char *>(_read_buf.get()), _readBufferSize);
+        }
+    }
+    uint8_t *_p = _read_buf.get() + i;
+    _buf_read -= i;
+    bool found_FFD9 = false;
+    if (_buf_read > 0)
+    {
+        i = 3;
+        while ((_buf_read > 0) && (!found_FFD9))
+        {
+            if ((_mjpeg_buf_offset > 0) && (_mjpeg_buf[_mjpeg_buf_offset - 1] == 0xFF) && (_p[0] == 0xD9)) // JPEG trailer
+            {
+                found_FFD9 = true;
+            }
+            else
+            {
+                while ((i < _buf_read) && (!found_FFD9))
+                {
+                    if ((_p[i] == 0xFF) && (_p[i + 1] == 0xD9)) // JPEG trailer
+                    {
+                        found_FFD9 = true;
+                        ++i;
+                    }
+                    ++i;
+                }
+            }
+
+            memcpy(_mjpeg_buf.get() + _mjpeg_buf_offset, _p, i);
+            _mjpeg_buf_offset += i;
+            int32_t o = _buf_read - i;
+            if (o > 0)
+            {
+                memcpy(_read_buf.get(), _p + i, o);
+                _buf_read = _input->readBytes(reinterpret_cast<char *>(_read_buf.get()) + o, _readBufferSize - o);
+                _p = _read_buf.get();
+                _inputindex += _buf_read;
+                _buf_read += o;
+            }
+            else
+            {
+                _buf_read = _input->readBytes(reinterpret_cast<char *>(_read_buf.get()), _readBufferSize);
+                _p = _read_buf.get();
+                _inputindex += _buf_read;
+            }
+            i = 0;
+        }
+        if (found_FFD9)
+        {
+            if (_mjpeg_buf_offset > _mjpegBufSize)
+            {
+                Serial.printf("_mjpeg_buf_offset(%d) > _mjpegBufSize (%d)\n", _mjpeg_buf_offset, _mjpegBufSize);
+            }
+            return true;
+        }
     }
 
-    debugln("Start play video");
+    return false;
+}
 
-    start_ms = millis();
-    curr_ms = millis();
-    next_frame_ms = start_ms + (1000 / FPS); // Calculate the time for the next frame
-    next_frame = 1;                          // Start with the first frame
+void VideoPlayer::drawFrame()
+{
+    mjpegBuf *mBuf = &_mjpegBufs[_mBufIdx];
+    mBuf->size = _mjpeg_buf_offset;
 
-    while (vFile.available() && mjpeg_read_frame())
-    { // Read video
-      total_read_video_ms += millis() - curr_ms;
-      curr_ms = millis();
-
-      if (millis() < next_frame_ms)
-      { // check show frame or skip frame
-        // Play video
-        mjpeg_draw_frame();
-        total_decode_video_ms += millis() - curr_ms;
-        curr_ms = millis();
-      }
-      else
-      {
-        ++skipped_frames;
-      }
-
-      // Wait until it's time for the next frame
-      while (millis() < next_frame_ms)
-      {
-        vTaskDelay(pdMS_TO_TICKS(1));
-      }
-
-      curr_ms = millis();
-      next_frame_ms = curr_ms + (1000 / FPS); // Calculate the time for the next frame
-      ++next_frame;                           // Increment the frame counter
+    xQueueSend(_pDecodeTask.xqh, &mBuf, portMAX_DELAY);
+    ++_mBufIdx;
+    if (_mBufIdx >= NUMBER_OF_DECODE_BUFFER)
+    {
+        _mBufIdx = 0;
     }
-    debugln("AV end");
-    total_play_audio_ms = audio.getTotalPlayingTime();
-    audio.stopSong();
-    showStats();
-  }
+    _mjpeg_buf = std::move(_mjpegBufs[_mBufIdx].buf);
 }
 
-void Player::stop()
+int VideoPlayer::drawMCU(JPEGDRAW *pDraw)
 {
-  debug_memory_usage();
-  debugln("Stopping player");
-  audio.stopSong();
-
-  // Close the video file
-  if (vFileOpen)
-  {
-    debugln("Closing video file");
-    vFile.close();
-    vFileOpen = false;
-  }
-
-  // Reset static variables
-  _mjpeg_buf_offset = 0;
-  _mBufIdx = 0;
-  _inputindex = 0;
-  _buf_read = 0;
-  _remain = 0;
-  _draw_queue_cnt = 0;
-
-  debugln("Files closed");
-
-  delay(500);
-  task_response = false;
-  debug_memory_usage();
+    unsigned long s = millis();
+    gfx->draw16bitRGBBitmap(pDraw->x, pDraw->y, pDraw->pPixels, pDraw->iWidth, pDraw->iHeight);
+    return 1;
 }
 
-void Player::debug_memory_usage()
+int VideoPlayer::queueDrawMCU(JPEGDRAW *pDraw)
 {
-  size_t free_heap = esp_get_free_heap_size();
-  size_t min_free_heap = esp_get_minimum_free_heap_size();
-  debugf("Free heap: %u bytes, Minimum free heap: %u bytes\n", free_heap, min_free_heap);
+    int len = pDraw->iWidth * pDraw->iHeight * 2;
+    JPEGDRAW *j = &jpegdraws[_draw_queue_cnt % NUMBER_OF_DRAW_BUFFER];
+    j->x = pDraw->x;
+    j->y = pDraw->y;
+    j->iWidth = pDraw->iWidth;
+    j->iHeight = pDraw->iHeight;
+    memcpy(j->pPixels, pDraw->pPixels, len);
+
+    ++_draw_queue_cnt;
+    xQueueSend(_xqh, &j, portMAX_DELAY);
+
+    return 1;
 }
 
-void Player::setVolume(int volume)
+void VideoPlayer::decode_task_internal()
 {
-  audio.setVolume(volume);
+    mjpegBuf *mBuf;
+    while (xQueueReceive(_pDecodeTask.xqh, &mBuf, portMAX_DELAY))
+    {
+        unsigned long s = millis();
+
+        _jpegDec.openRAM(mBuf->buf.get(), mBuf->size, _pDecodeTask.drawFunc);
+
+        if (_useBigEndian)
+        {
+            _jpegDec.setPixelType(RGB565_BIG_ENDIAN);
+        }
+        _jpegDec.setMaxOutputSize(MAXOUTPUTSIZE);
+        _jpegDec.decode(0, 0, 0);
+        _jpegDec.close();
+    }
+    vQueueDelete(_pDecodeTask.xqh);
+    vTaskDelete(NULL);
 }
 
-void Player::showStats()
+void VideoPlayer::draw_task_internal()
 {
-  gfx->fillScreen(BLACK);
-
-  int time_used = millis() - start_ms;
-  int total_frames = next_frame - 1;
-
-  int played_frames = total_frames - skipped_frames;
-  float fps = 1000.0 * played_frames / time_used;
-
-  debugln("Show Stats");
-
-  debugf("Played frames: %d\n", played_frames);
-  debugf("Skipped frames: %d (%0.1f %%)\n", skipped_frames, 100.0 * skipped_frames / total_frames);
-  debugf("Time used: %d ms\n", time_used);
-  debugf("Expected FPS: %d\n", FPS);
-  debugf("Actual FPS: %0.1f\n", fps);
-  debugf("Read audio: %lu ms (%0.1f %%)\n", total_read_audio_ms, 100.0 * total_read_audio_ms / time_used);
-  debugf("Play audio: %lu ms (%0.1f %%)\n", total_play_audio_ms, 100.0 * total_play_audio_ms / time_used);
-  debugf("Read video: %lu ms (%0.1f %%)\n", total_read_video_ms, 100.0 * total_read_video_ms / time_used);
-  debugf("Decode video: %lu ms (%0.1f %%)\n", total_decode_video_ms, 100.0 * total_decode_video_ms / time_used);
-  debugf("Show video: %lu ms (%0.1f %%)\n", total_show_video_ms, 100.0 * total_show_video_ms / time_used);
-
-  gfx->setCursor(0, 50);
-  gfx->setTextColor(WHITE);
-  gfx->printf("Played frames: %d\n", played_frames);
-  delay(50);
-  gfx->printf("Skipped frames: %d (%0.1f %%)\n", skipped_frames, 100.0 * skipped_frames / total_frames);
-  delay(50);
-  gfx->printf("Time used: %d ms\n", time_used);
-  delay(50);
-  gfx->printf("Expected FPS: %d\n", FPS);
-  delay(50);
-  gfx->printf("Actual FPS: %0.1f\n\n", fps);
-  delay(50);
-
-  int16_t r1 = ((gfx->height() - CHART_MARGIN - CHART_MARGIN) / 2);
-  int16_t r2 = r1 / 2;
-  int16_t cx = gfx->width() - r1 - 10;
-  int16_t cy = r1 + CHART_MARGIN;
-
-  float arc_start1 = 0;
-  float arc_end1 = arc_start1 + max(2.0, 360.0 * total_read_audio_ms / time_used);
-  for (int i = arc_start1 + 1; i < arc_end1; i += 2)
-  {
-    gfx->fillArc(cx, cy, r1, r2, arc_start1 - 90.0, i - 90.0, LEGEND_A_COLOR);
-    delay(5);
-  }
-  gfx->fillArc(cx, cy, r1, r2, arc_start1 - 90.0, arc_end1 - 90.0, LEGEND_A_COLOR);
-  delay(50);
-  gfx->setTextColor(LEGEND_A_COLOR);
-  gfx->printf("Read audio: %lu ms (%0.1f %%)\n", total_read_audio_ms, 100.0 * total_read_audio_ms / time_used);
-  delay(50);
-
-  float arc_start2 = arc_end1;
-  float arc_end2 = arc_start2 + max(2.0, 360.0 * total_decode_audio_ms / time_used);
-  for (int i = arc_start2 + 1; i < arc_end2; i += 2)
-  {
-    gfx->fillArc(cx, cy, r1, r2, arc_start2 - 90.0, i - 90.0, LEGEND_B_COLOR);
-    delay(5);
-  }
-  gfx->fillArc(cx, cy, r1, r2, arc_start2 - 90.0, arc_end2 - 90.0, LEGEND_B_COLOR);
-  delay(50);
-  gfx->setTextColor(LEGEND_J_COLOR);
-  gfx->printf("Play audio: %lu ms (%0.1f %%)\n", total_play_audio_ms, 100.0 * total_play_audio_ms / time_used);
-  delay(50);
-
-  float arc_start3 = arc_end2;
-  float arc_end3 = arc_start3 + max(2.0, 360.0 * total_read_video_ms / time_used);
-  for (int i = arc_start3 + 1; i < arc_end3; i += 2)
-  {
-    gfx->fillArc(cx, cy, r1, r2, arc_start3 - 90.0, i - 90.0, LEGEND_C_COLOR);
-    delay(5);
-  }
-  gfx->fillArc(cx, cy, r1, r2, arc_start3 - 90.0, arc_end3 - 90.0, LEGEND_C_COLOR);
-  delay(50);
-  gfx->setTextColor(LEGEND_C_COLOR);
-  gfx->printf("Read video: %lu ms (%0.1f %%)\n", total_read_video_ms, 100.0 * total_read_video_ms / time_used);
-  delay(50);
-
-  float arc_start4 = arc_end3;
-  float arc_end4 = arc_start4 + max(2.0, 360.0 * total_show_video_ms / time_used);
-  for (int i = arc_start4 + 1; i < arc_end4; i += 2)
-  {
-    gfx->fillArc(cx, cy, r1, r2, arc_start4 - 90.0, i - 90.0, LEGEND_D_COLOR);
-    delay(5);
-  }
-  gfx->fillArc(cx, cy, r1, r2, arc_start4 - 90.0, arc_end4 - 90.0, LEGEND_D_COLOR);
-  delay(50);
-  gfx->setTextColor(LEGEND_D_COLOR);
-  gfx->printf("Show video: %lu ms (%0.1f %%)\n", total_show_video_ms, 100.0 * total_show_video_ms / time_used);
-  delay(50);
-
-  float arc_start5 = 0;
-  float arc_end5 = arc_start5 + max(2.0, 360.0 * total_decode_video_ms / time_used);
-  for (int i = arc_start5 + 1; i < arc_end5; i += 2)
-  {
-    gfx->fillArc(cx, cy, r2, 0, arc_start5 - 90.0, i - 90.0, LEGEND_E_COLOR);
-    delay(5);
-  }
-  gfx->fillArc(cx, cy, r2, 0, arc_start5 - 90.0, arc_end5 - 90.0, LEGEND_E_COLOR);
-  delay(50);
-  gfx->setTextColor(LEGEND_E_COLOR);
-  gfx->printf("Decode video: %lu ms (%0.1f %%)\n", total_decode_video_ms, 100.0 * total_decode_video_ms / time_used);
+    JPEGDRAW *pDraw;
+    while (xQueueReceive(_pDrawTask.xqh, &pDraw, portMAX_DELAY))
+    {
+        _pDrawTask.drawFunc(pDraw);
+    }
+    vQueueDelete(_pDrawTask.xqh);
+    vTaskDelete(NULL);
 }
 
-//****************************************************************************************
-//                                   A U D I O _ T A S K                                 *
-//****************************************************************************************
-
-void CreateQueues()
+void VideoPlayer::decode_task(void *arg)
 {
-  audioSetQueue = xQueueCreate(10, sizeof(struct audioMessage));
-  audioGetQueue = xQueueCreate(10, sizeof(struct audioMessage));
+    VideoPlayer *instance = static_cast<VideoPlayer *>(arg);
+    instance->decode_task_internal();
 }
 
-void audioInit()
+void VideoPlayer::draw_task(void *arg)
 {
-  xTaskCreatePinnedToCore(
-      audioTask,                         /* Function to implement the task */
-      "audioplay",                       /* Name of the task */
-      5000,                              /* Stack size in words */
-      NULL,                              /* Task input parameter */
-      configMAX_PRIORITIES - AUDIO_PRIO, /* Priority of the task */
-      (TaskHandle_t *const)&_audioTask,  /* Task handle. */
-      AUDIOASSIGNCORE                    /* Core where the task should run */
-  );
+    VideoPlayer *instance = static_cast<VideoPlayer *>(arg);
+    instance->draw_task_internal();
 }
 
-void audioTask(void *parameter)
+bool VideoPlayer::mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDraw,
+                              bool useBigEndian, BaseType_t decodeAssignCore, BaseType_t drawAssignCore)
 {
-  CreateQueues();
-  if (!audioSetQueue || !audioGetQueue)
-  {
-    log_e("queues are not initialized");
+    _input = std::unique_ptr<File>(static_cast<File *>(input));
+    _mjpegBufSize = mjpegBufSize;
+    _useBigEndian = useBigEndian;
+
+    for (int i = 0; i < NUMBER_OF_DECODE_BUFFER; ++i)
+    {
+        _mjpegBufs[i].buf = std::make_unique<uint8_t[]>(mjpegBufSize);
+        if (_mjpegBufs[i].buf)
+        {
+            Serial.printf("#%d decode buffer allocated.\n", i);
+        }
+        else
+        {
+            Serial.printf("#%d decode buffer allocat failed.\n", i);
+        }
+    }
+    _mjpeg_buf = std::move(_mjpegBufs[_mBufIdx].buf);
+
+    if (!_read_buf)
+    {
+        _read_buf = std::make_unique<uint8_t[]>(_readBufferSize);
+    }
+    if (_read_buf)
+    {
+        Serial.println("Read buffer allocated.");
+    }
+
+    _xqh = xQueueCreate(NUMBER_OF_DRAW_BUFFER, sizeof(JPEGDRAW));
+    _pDrawTask.xqh = _xqh;
+    _pDrawTask.drawFunc = pfnDraw;
+    _pDecodeTask.xqh = xQueueCreate(NUMBER_OF_DECODE_BUFFER, sizeof(mjpegBuf));
+    _pDecodeTask.drawFunc = queueDrawMCU_wrapper;
+
+    xTaskCreatePinnedToCore(
+        (TaskFunction_t)decode_task,
+        (const char *const)"MJPEG decode Task",
+        (const uint32_t)4096,
+        (void *const)this,
+        (UBaseType_t)configMAX_PRIORITIES - 5,
+        (TaskHandle_t *const)&_decodeTask,
+        (const BaseType_t)decodeAssignCore);
+    xTaskCreatePinnedToCore(
+        (TaskFunction_t)draw_task,
+        (const char *const)"MJPEG Draw Task",
+        (const uint32_t)4096,
+        (void *const)this,
+        (UBaseType_t)configMAX_PRIORITIES - 1,
+        (TaskHandle_t *const)&_draw_task,
+        (const BaseType_t)drawAssignCore);
+
+    for (int i = 0; i < NUMBER_OF_DRAW_BUFFER; i++)
+    {
+        if (!jpegdraws[i].pPixels)
+        {
+            jpegdraws[i].pPixels = (uint16_t *)heap_caps_malloc(MAXOUTPUTSIZE * 16 * 16 * 2, MALLOC_CAP_DMA);
+        }
+        if (jpegdraws[i].pPixels)
+        {
+            Serial.printf("#%d draw buffer allocated.\n", i);
+        }
+        else
+        {
+            Serial.printf("#%d draw buffer allocat failed.\n", i);
+        }
+    }
+
+    return true;
+}
+
+bool VideoPlayer::mjpeg_read_frame()
+{
+    if (_inputindex == 0)
+    {
+        _buf_read = _input->readBytes(reinterpret_cast<char *>(_read_buf.get()), _readBufferSize);
+        _inputindex += _buf_read;
+    }
+    _mjpeg_buf_offset = 0;
+    int i = 0;
+    bool found_FFD8 = false;
+    while ((_buf_read > 0) && (!found_FFD8))
+    {
+        i = 0;
+        while ((i < _buf_read) && (!found_FFD8))
+        {
+            if ((_read_buf[i] == 0xFF) && (_read_buf[i + 1] == 0xD8)) // JPEG header
+            {
+                found_FFD8 = true;
+            }
+            ++i;
+        }
+        if (found_FFD8)
+        {
+            --i;
+        }
+        else
+        {
+            _buf_read = _input->readBytes(reinterpret_cast<char *>(_read_buf.get()), _readBufferSize);
+        }
+    }
+    uint8_t *_p = _read_buf.get() + i;
+    _buf_read -= i;
+    bool found_FFD9 = false;
+    if (_buf_read > 0)
+    {
+        i = 3;
+        while ((_buf_read > 0) && (!found_FFD9))
+        {
+            if ((_mjpeg_buf_offset > 0) && (_mjpeg_buf[_mjpeg_buf_offset - 1] == 0xFF) && (_p[0] == 0xD9)) // JPEG trailer
+            {
+                found_FFD9 = true;
+            }
+            else
+            {
+                while ((i < _buf_read) && (!found_FFD9))
+                {
+                    if ((_p[i] == 0xFF) && (_p[i + 1] == 0xD9)) // JPEG trailer
+                    {
+                        found_FFD9 = true;
+                        ++i;
+                    }
+                    ++i;
+                }
+            }
+
+            memcpy(_mjpeg_buf.get() + _mjpeg_buf_offset, _p, i);
+            _mjpeg_buf_offset += i;
+            int32_t o = _buf_read - i;
+            if (o > 0)
+            {
+                memcpy(_read_buf.get(), _p + i, o);
+                _buf_read = _input->readBytes(reinterpret_cast<char *>(_read_buf.get()) + o, _readBufferSize - o);
+                _p = _read_buf.get();
+                _inputindex += _buf_read;
+                _buf_read += o;
+            }
+            else
+            {
+                _buf_read = _input->readBytes(reinterpret_cast<char *>(_read_buf.get()), _readBufferSize);
+                _p = _read_buf.get();
+                _inputindex += _buf_read;
+            }
+            i = 0;
+        }
+        if (found_FFD9)
+        {
+            if (_mjpeg_buf_offset > _mjpegBufSize)
+            {
+                Serial.printf("_mjpeg_buf_offset(%d) > _mjpegBufSize (%d)\n", _mjpeg_buf_offset, _mjpegBufSize);
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool VideoPlayer::mjpeg_draw_frame()
+{
+    mjpegBuf *mBuf = &_mjpegBufs[_mBufIdx];
+    mBuf->size = _mjpeg_buf_offset;
+
+    xQueueSend(_pDecodeTask.xqh, &mBuf, portMAX_DELAY);
+    ++_mBufIdx;
+    if (_mBufIdx >= NUMBER_OF_DECODE_BUFFER)
+    {
+        _mBufIdx = 0;
+    }
+    _mjpeg_buf = std::move(_mjpegBufs[_mBufIdx].buf);
+
+    return true;
+}
+
+void VideoPlayer::task()
+{
     while (true)
     {
-      ;
-    } // endless loop
-  }
-
-  struct audioMessage audioRxTaskMessage;
-  struct audioMessage audioTxTaskMessage;
-
-  audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  audio.setVolume(15); // 0...21
-
-  while (true)
-  {
-    if (xQueueReceive(audioSetQueue, &audioRxTaskMessage, 1) == pdPASS)
-    {
-      if (audioRxTaskMessage.cmd == SET_VOLUME)
-      {
-        audioTxTaskMessage.cmd = SET_VOLUME;
-        audio.setVolume(audioRxTaskMessage.value);
-        audioTxTaskMessage.ret = 1;
-        xQueueSend(audioGetQueue, &audioTxTaskMessage, portMAX_DELAY);
-      }
-      else if (audioRxTaskMessage.cmd == CONNECTTOHOST)
-      {
-        audioTxTaskMessage.cmd = CONNECTTOHOST;
-        audioTxTaskMessage.ret = audio.connecttohost(audioRxTaskMessage.txt);
-        xQueueSend(audioGetQueue, &audioTxTaskMessage, portMAX_DELAY);
-      }
-      else if (audioRxTaskMessage.cmd == CONNECTTOSD)
-      {
-        audioTxTaskMessage.cmd = CONNECTTOSD;
-        audioTxTaskMessage.ret = audio.connecttoFS(SD_MMC, audioRxTaskMessage.txt);
-        xQueueSend(audioGetQueue, &audioTxTaskMessage, portMAX_DELAY);
-      }
-      else if (audioRxTaskMessage.cmd == GET_VOLUME)
-      {
-        audioTxTaskMessage.cmd = GET_VOLUME;
-        audioTxTaskMessage.ret = audio.getVolume();
-        xQueueSend(audioGetQueue, &audioTxTaskMessage, portMAX_DELAY);
-      }
-      else
-      {
-        log_i("error");
-      }
-    }
-    audio.loop();
-    if (!audio.isRunning())
-    {
-      sleep(1);
-    }
-  }
-}
-
-audioMessage transmitReceive(audioMessage msg)
-{
-  xQueueSend(audioSetQueue, &msg, portMAX_DELAY);
-  if (xQueueReceive(audioGetQueue, &audioRxMessage, portMAX_DELAY) == pdPASS)
-  {
-    if (msg.cmd != audioRxMessage.cmd)
-    {
-      log_e("wrong reply from message queue");
-    }
-  }
-  return audioRxMessage;
-}
-
-void audioSetVolume(uint8_t vol)
-{
-  audioTxMessage.cmd = SET_VOLUME;
-  audioTxMessage.value = vol;
-  audioMessage RX = transmitReceive(audioTxMessage);
-}
-
-bool audioConnecttoSD(const char *filename)
-{
-  audioTxMessage.cmd = CONNECTTOSD;
-  audioTxMessage.txt = filename;
-  audioMessage RX = transmitReceive(audioTxMessage);
-  return RX.ret;
-}
-
-uint8_t audioGetVolume()
-{
-  audioTxMessage.cmd = GET_VOLUME;
-  audioMessage RX = transmitReceive(audioTxMessage);
-  return RX.ret;
-}
-
-bool audioConnecttohost(const char *host)
-{
-  audioTxMessage.cmd = CONNECTTOHOST;
-  audioTxMessage.txt = host;
-  audioMessage RX = transmitReceive(audioTxMessage);
-  return RX.ret;
-}
-
-//****************************************************************************************
-//                                   DECODE & DRAW _ T A S K                             *
-//****************************************************************************************
-
-int drawMCU(JPEGDRAW *pDraw)
-{
-  // debugf("Draw pos = (%d, %d), size = %d x %d\n", pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight);
-  unsigned long s = millis();
-  gfx->draw16bitRGBBitmap(pDraw->x, pDraw->y, pDraw->pPixels, pDraw->iWidth, pDraw->iHeight);
-  total_show_video_ms += millis() - s;
-  return 1;
-} /* drawMCU() */
-
-void CreateVideoQueues()
-{
-  videoSetQueue = xQueueCreate(10, sizeof(struct videoMessage));
-  videoGetQueue = xQueueCreate(10, sizeof(struct videoMessage));
-  if (!videoSetQueue || !videoGetQueue)
-  {
-    debugln("Failed to create video command queues");
-  }
-  else
-  {
-    debugln("Video command queues created successfully");
-  }
-}
-
-// ----------- Decode and Draw Task
-int queueDrawMCU(JPEGDRAW *pDraw)
-{
-  int len = pDraw->iWidth * pDraw->iHeight * 2;
-  JPEGDRAW *j = &jpegdraws[_draw_queue_cnt % NUMBER_OF_DRAW_BUFFER];
-  j->x = pDraw->x;
-  j->y = pDraw->y;
-  j->iWidth = pDraw->iWidth;
-  j->iHeight = pDraw->iHeight;
-  memcpy(j->pPixels, pDraw->pPixels, len);
-
-  // log_i("queueDrawMCU start.");
-  ++_draw_queue_cnt;
-  xQueueSend(_xqh, &j, portMAX_DELAY);
-  // log_i("queueDrawMCU end.");
-
-  return 1;
-}
-
-void decode_task(void *arg)
-{
-  paramDecodeTask *p = (paramDecodeTask *)arg;
-  mjpegBuf *mBuf;
-  struct videoMessage videoRxTaskMessage;
-  struct videoMessage videoTxTaskMessage;
-
-  debugln("decode_task ---->  start.");
-  vTaskDelay(pdMS_TO_TICKS(20));
-
-  while (true)
-  {
-    if (task_response)
-      debugln("Decode Task is running...");
-
-    if (xQueueReceive(videoSetQueue, &videoRxTaskMessage, 0) == pdPASS)
-    {
-      debugln("Received command in decode_task.");
-      if (videoRxTaskMessage.cmd == SWITCH_VIDEO_FILE)
-      {
-        debugln("Received SWITCH_VIDEO_FILE command.");
-        _input = videoRxTaskMessage.input;
-        videoTxTaskMessage.cmd = SWITCH_VIDEO_FILE;
-        videoTxTaskMessage.ret = true;
-        xQueueSend(videoGetQueue, &videoTxTaskMessage, portMAX_DELAY);
-        debugln("Switched video file.");
-      }
-    }
-
-    if (xQueueReceive(p->xqh, &mBuf, portMAX_DELAY))
-    {
-      unsigned long s = millis();
-      _jpegDec.openRAM(mBuf->buf, mBuf->size, p->drawFunc);
-      if (_useBigEndian)
-      {
-        _jpegDec.setPixelType(RGB565_BIG_ENDIAN);
-      }
-      _jpegDec.setMaxOutputSize(MAXOUTPUTSIZE);
-      _jpegDec.decode(0, 0, 0);
-      _jpegDec.close();
-      total_decode_video_ms += millis() - s;
-    }
-    vTaskDelay(pdMS_TO_TICKS(1));
-  }
-  vQueueDelete(p->xqh);
-  vTaskDelay(pdMS_TO_TICKS(20));
-  debugln("decode_task end.");
-  vTaskDelay(pdMS_TO_TICKS(20));
-  vTaskDelete(NULL);
-}
-
-void draw_task(void *arg)
-{
-  paramDrawTask *p = (paramDrawTask *)arg;
-  JPEGDRAW *pDraw;
-  
-  debugln("draw_task ---->  start.");
-  vTaskDelay(pdMS_TO_TICKS(20));
-
-  while (xQueueReceive(p->xqh, &pDraw, portMAX_DELAY))
-  {
-    if (task_response)
-      debugln("Draw Task is running...");
-
-    p->drawFunc(pDraw);
-    vTaskDelay(pdMS_TO_TICKS(1));
-  }
-  vQueueDelete(p->xqh);
-  vTaskDelay(pdMS_TO_TICKS(20));
-  debugln("draw_task end.");
-  vTaskDelay(pdMS_TO_TICKS(20));
-  vTaskDelete(NULL);
-}
-
-struct videoMessage transmitReceiveVideo(struct videoMessage msg)
-{
-  struct videoMessage videoRxMessage;
-  debugln("Sending video command.");
-  xQueueSend(videoSetQueue, &msg, portMAX_DELAY);
-  debugln("Command sent to videoSetQueue.");
-  if (xQueueReceive(videoGetQueue, &videoRxMessage, portMAX_DELAY) == pdPASS)
-  {
-    if (msg.cmd != videoRxMessage.cmd)
-    {
-      debugln("wrong reply from message queue");
-    }
-    else
-    {
-      debugln("Received correct reply from message queue.");
-    }
-  }
-  else
-  {
-    debugln("Failed to receive reply from message queue.");
-  }
-  return videoRxMessage;
-}
-
-bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDraw,
-                 bool useBigEndian, BaseType_t decodeAssignCore, BaseType_t drawAssignCore)
-{
-  _input = input;
-  _mjpegBufSize = mjpegBufSize;
-  _useBigEndian = useBigEndian;
-
-  CreateVideoQueues(); // Initialize video command queues
-
-  for (int i = 0; i < NUMBER_OF_DECODE_BUFFER; ++i)
-  {
-    _mjpegBufs[i].buf = (uint8_t *)malloc(mjpegBufSize);
-    if (_mjpegBufs[i].buf)
-    {
-      log_i("#%d decode buffer allocated.", i);
-    }
-    else
-    {
-      log_e("#%d decode buffer allocat failed.", i);
-    }
-  }
-  _mjpeg_buf = _mjpegBufs[_mBufIdx].buf;
-  debugln("Decode buffer allocated.");
-
-  if (!_read_buf)
-  {
-    _read_buf = (uint8_t *)malloc(READ_BUFFER_SIZE);
-  }
-  if (_read_buf)
-  {
-    debugln("Read buffer allocated.");
-  }
-
-  _xqh = xQueueCreate(NUMBER_OF_DRAW_BUFFER, sizeof(JPEGDRAW));
-  _pDrawTask.xqh = _xqh;
-  _pDrawTask.drawFunc = pfnDraw;
-  _pDecodeTask.xqh = xQueueCreate(NUMBER_OF_DECODE_BUFFER, sizeof(mjpegBuf));
-  _pDecodeTask.drawFunc = queueDrawMCU;
-
-  debugln("Creating decode_task.");
-  if (xTaskCreatePinnedToCore(
-          (TaskFunction_t)decode_task,
-          (const char *const)"MJPEG decode Task",
-          (const uint32_t)5000,
-          (void *const)&_pDecodeTask,
-          (UBaseType_t)configMAX_PRIORITIES - DECODE_PRIO,
-          (TaskHandle_t *const)&_decodeTask,
-          (const BaseType_t)decodeAssignCore) != pdPASS)
-  {
-    debugln("Failed to create decode_task.");
-  }
-  else
-  {
-    debugln("decode_task created successfully.");
-  }
-
-  debugln("Creating draw_task.");
-  if (xTaskCreatePinnedToCore(
-          (TaskFunction_t)draw_task,
-          (const char *const)"MJPEG Draw Task",
-          (const uint32_t)5000,
-          (void *const)&_pDrawTask,
-          (UBaseType_t)configMAX_PRIORITIES - DRAW_PRIO,
-          (TaskHandle_t *const)&_drawTask,
-          (const BaseType_t)drawAssignCore) != pdPASS)
-  {
-    debugln("Failed to create draw_task.");
-  }
-  else
-  {
-    debugln("draw_task created successfully.");
-  }
-
-  for (int i = 0; i < NUMBER_OF_DRAW_BUFFER; i++)
-  {
-    if (!jpegdraws[i].pPixels)
-    {
-      jpegdraws[i].pPixels = (uint16_t *)heap_caps_malloc(MAXOUTPUTSIZE * 16 * 16 * 2, MALLOC_CAP_DMA);
-    }
-    if (jpegdraws[i].pPixels)
-    {
-      log_i("#%d draw buffer allocated.", i);
-    }
-    else
-    {
-      log_e("#%d draw buffer allocat failed.", i);
-    }
-  }
-  debugln("Draw buffer allocated.");
-
-  return true;
-}
-
-bool videoSwitchFile(Stream *newFile)
-{
-  struct videoMessage videoTxMessage;
-  videoTxMessage.cmd = SWITCH_VIDEO_FILE;
-  videoTxMessage.input = newFile;
-  struct videoMessage RX = transmitReceiveVideo(videoTxMessage);
-  return RX.ret;
-}
-
-bool mjpeg_read_frame()
-{
-  if (_inputindex == 0)
-  {
-    _buf_read = _input->readBytes(_read_buf, READ_BUFFER_SIZE);
-    _inputindex += _buf_read;
-  }
-  _mjpeg_buf_offset = 0;
-  int i = 0;
-  bool found_FFD8 = false;
-  while ((_buf_read > 0) && (!found_FFD8))
-  {
-    i = 0;
-    while ((i < _buf_read) && (!found_FFD8))
-    {
-      if ((_read_buf[i] == 0xFF) && (_read_buf[i + 1] == 0xD8)) // JPEG header
-      {
-        debugf("Found FFD8 at: %d.", i);
-        debugln();
-        found_FFD8 = true;
-      }
-      ++i;
-    }
-    if (found_FFD8)
-    {
-      --i;
-    }
-    else
-    {
-      _buf_read = _input->readBytes(_read_buf, READ_BUFFER_SIZE);
-    }
-  }
-  uint8_t *_p = _read_buf + i;
-  _buf_read -= i;
-  bool found_FFD9 = false;
-  if (_buf_read > 0)
-  {
-    i = 3;
-    while ((_buf_read > 0) && (!found_FFD9))
-    {
-      if ((_mjpeg_buf_offset > 0) && (_mjpeg_buf[_mjpeg_buf_offset - 1] == 0xFF) && (_p[0] == 0xD9)) // JPEG trailer
-      {
-        found_FFD9 = true;
-      }
-      else
-      {
-        while ((i < _buf_read) && (!found_FFD9))
+        File *file = nullptr;
+        if (xQueueReceive(_videoQueue, &file, portMAX_DELAY))
         {
-          if ((_p[i] == 0xFF) && (_p[i + 1] == 0xD9)) // JPEG trailer
-          {
-            found_FFD9 = true;
-            ++i;
-          }
-          ++i;
+            while (file && readFrame())
+            {
+                drawFrame();
+                vTaskDelay(pdMS_TO_TICKS(1000 / 25)); // 25 FPS
+            }
+            stop();
         }
-      }
-
-      debugf("i: %d", i);
-      debugln();
-      memcpy(_mjpeg_buf + _mjpeg_buf_offset, _p, i);
-      _mjpeg_buf_offset += i;
-      int32_t o = _buf_read - i;
-      if (o > 0)
-      {
-        debugf("o: %d", o);
-        memcpy(_read_buf, _p + i, o);
-        _buf_read = _input->readBytes(_read_buf + o, READ_BUFFER_SIZE - o);
-        _p = _read_buf;
-        _inputindex += _buf_read;
-        _buf_read += o;
-        debugf("_buf_read: %d", _buf_read);
-      }
-      else
-      {
-        _buf_read = _input->readBytes(_read_buf, READ_BUFFER_SIZE);
-        _p = _read_buf;
-        _inputindex += _buf_read;
-      }
-      i = 0;
     }
-    if (found_FFD9)
-    {
-      debugf("Found FFD9 at: %d.", _mjpeg_buf_offset);
-      debugln();
-      if (_mjpeg_buf_offset > _mjpegBufSize)
-      {
-        log_e("_mjpeg_buf_offset(%d) > _mjpegBufSize (%d)", _mjpeg_buf_offset, _mjpegBufSize);
-      }
-      return true;
-    }
-  }
-
-  return false;
 }
 
-bool mjpeg_draw_frame()
-{
-  mjpegBuf *mBuf = &_mjpegBufs[_mBufIdx];
-  mBuf->size = _mjpeg_buf_offset;
-  // log_i("_mjpegBufs[%d].size: %d.", _mBufIdx, _mjpegBufs[_mBufIdx].size);
-  // log_i("_mjpegBufs[%d].buf start: %X %X, end: %X, %X.", _mjpegBufs, _mjpegBufs[_mBufId].buf[0], _mjpegBufs[_mBufIdx].buf[1], _mjpegBufs[_mBufIdx].buf[_mjpeg_buf_offset - 2], _mjpegBufs[_mBufIdx].buf[_mjpeg_buf_offset - 1]);
-  xQueueSend(_pDecodeTask.xqh, &mBuf, portMAX_DELAY);
-  ++_mBufIdx;
-  if (_mBufIdx >= NUMBER_OF_DECODE_BUFFER)
-  {
-    _mBufIdx = 0;
-  }
-  _mjpeg_buf = _mjpegBufs[_mBufIdx].buf;
-  // log_i("queue decode_task end");
-
-  return true;
+// Statische Wrapper-Funktionen für die Memberfunktionen
+int drawMCU_wrapper(JPEGDRAW *pDraw) {
+    return VideoPlayer::instance->drawMCU(pDraw);
 }
 
-//****************************************************************************************
-//                                  FILE _ FUNCTIONS                                     *
-//****************************************************************************************
-
-void getFiles()
-{
-  if (!SD_MMC.begin("/root", false))
-  {
-    debugln("ERROR: File system mount failed!");
-    return;
-  }
-  sdcard = true;
-  debugln("SD Card found...");
-
-  listFilesByExtension(SD_MMC, videoFiles, audioFiles);
-
-  uint8_t cardType = SD_MMC.cardType();
-  debug("SD Card Type: ");
-  if (cardType == CARD_MMC)
-  {
-    debugln("MMC");
-  }
-  else if (cardType == CARD_SD)
-  {
-    debugln("SDSC");
-  }
-  else if (cardType == CARD_SDHC)
-  {
-    debugln("SDHC");
-  }
-  else
-  {
-    debugln("UNKNOWN");
-  }
-}
-
-void scanDirectory(fs::FS &fs, String dirname, std::map<std::string, std::string> &fileMap)
-{
-  File root = fs.open(dirname.c_str());
-  if (!root)
-  {
-    debugln("Failed to open directory");
-    return;
-  }
-  if (!root.isDirectory())
-  {
-    debugln("Not a directory");
-    return;
-  }
-
-  File file = root.openNextFile();
-  while (file)
-  {
-    if (file.isDirectory())
-    {
-      String dir = dirname + "/" + file.name();
-      // Recursively call the function for subdirectories
-      scanDirectory(fs, dir, fileMap);
-    }
-    else
-    {
-      std::string filename = file.name();
-      std::string baseName = filename.substr(0, filename.find_last_of("."));
-
-      if (filename.find(".mjpeg") != std::string::npos)
-      {
-        // Check if the corresponding .aac file exists
-        if (fileMap.find(baseName) == fileMap.end())
-        {
-          fileMap[baseName] = ""; // Mark the presence of .mjpeg file
-        }
-        // debugf("Found video file: %s\n", filename.c_str());
-      }
-      else if (filename.find(".aac") != std::string::npos)
-      {
-        fileMap[baseName] = filename; // Store the .aac file
-                                      // debugf("Found audio file: %s\n", filename.c_str());
-      }
-    }
-    file = root.openNextFile();
-  }
-  file.close();
-}
-
-void populateVectorsFromMap(const std::map<std::string, std::string> &fileMap, std::vector<String> &videoFiles, std::vector<String> &audioFiles)
-{
-  // Populate the vectors based on the map
-  for (const auto &pair : fileMap)
-  {
-    videoFiles.push_back(("/" + pair.first + ".mjpeg").c_str());
-    if (!pair.second.empty())
-    {
-      audioFiles.push_back(("/" + pair.second).c_str());
-    }
-    else
-    {
-      audioFiles.push_back("X");
-    }
-    debugf("Added video: %s, audio: %s\n", videoFiles.back().c_str(), audioFiles.back().c_str());
-  }
-}
-
-void listFilesByExtension(fs::FS &fs, std::vector<String> &videoFiles, std::vector<String> &audioFiles)
-{
-  std::map<std::string, std::string> fileMap; // Map to store filenames without extensions and their corresponding .aac files
-  scanDirectory(fs, "/", fileMap);
-  populateVectorsFromMap(fileMap, videoFiles, audioFiles);
+int queueDrawMCU_wrapper(JPEGDRAW *pDraw) {
+    return VideoPlayer::instance->queueDrawMCU(pDraw);
 }
