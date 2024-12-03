@@ -46,37 +46,74 @@ void setup() {
   Serial.setTxTimeoutMs(5);  // set USB CDC Time TX
   Serial.begin(115200);
 
-  Serial.println("Init FS");
+  delay(5000);
 
-  if (!SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0, SD_MMC_D1, SD_MMC_D2, SD_MMC_D3)) {
-    Serial.println("Pin change failed!");
-    return;
-  }
+  esp_log_level_set("*", ESP_LOG_NONE);
 
-  // SD-Karte initialisieren
-  if ((!SD_MMC.begin("/root", false)) && (!SD_MMC.begin("/root", false)) && (!SD_MMC.begin("/root", false)) && (!SD_MMC.begin("/root", false))) {
-    Serial.println("ERROR: File system mount failed!");
-  }
+#ifdef GFX_BL
+  pinMode(GFX_BL, OUTPUT);
+  digitalWrite(GFX_BL, HIGH);
+#endif
 
-  // VideoPlayer initialisieren
-  videoPlayer = new VideoPlayer(gfx, MJPEG_BUFFER_SIZE, READ_BUFFER_SIZE);
-  videoPlayer->init();
+  LeftButton.begin();
+  RightButton.begin();
+  delay(100);
 
-  // Task erstellen
-  xTaskCreate(videoTask, "Video Task", 8192, nullptr, 1, nullptr);
+  xTaskCreatePinnedToCore(input_task, "Button Task", 4096, NULL, (UBaseType_t)configMAX_PRIORITIES - 1, &inputHandle, INPUTASSIGNCORE);
 
-  // Video abspielen
-  videoPlayer->play("/rick.mjpeg");
+  player.init();
+
+  delay(100);
+
+  current_video++;
+  current_audio++;
+
+  player.start(videoFiles[current_video].c_str());
+  player.setVolume(15);
 }
 
-void loop() {
-  delay(6000);
+void loop()
+{
+  esp_task_wdt_reset(); // Reset watchdog in case of long operations
+}
 
-  videoPlayer->stop();
+void input_task(void *param)
+{
+  for (;;)
+  {
+    if (LeftButton.pressed())
+    {
+      debugln("Button pressed");
+      current_video++;
+      current_audio++;
 
-  videoPlayer->play("/rick.mjpeg");
-  delay(6000);
+      if (current_video >= videoFiles.size())
+        current_video = 0;
 
-  videoPlayer->stop();
-  delay(6000);
+      // if (current_audio >= audioFiles.size())
+      //   current_audio = 0;
+
+      player.stop();
+     
+      debugln("Starting player");
+      debugln("next Video");
+      player.start(videoFiles[current_video].c_str());
+    }
+
+    if (LeftButton.released())
+    {
+      debugln("Button released");
+      if (millis() - LeftButtonsMillis > 1000)
+      {
+        is_muted = !is_muted;
+        debugln("mute");
+      }
+      if (is_muted)
+        player.setVolume(0);
+      else
+        player.setVolume(15);
+      LeftButtonsMillis = 0;
+    }
+    vTaskDelay(pdMS_TO_TICKS(20)); // Delay for 20 milliseconds
+  }
 }

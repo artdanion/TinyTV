@@ -14,13 +14,6 @@
 // #define DECODEASSIGNCORE 0
 // #define DRAWASSIGNCORE 0
 #define INPUTASSIGNCORE 1
-#define VIDEOASSIGNCORE 0
-
-#define AUDIO_PRIO 1
-#define DECODE_PRIO 1
-#define DRAW_PRIO 2
-#define INPUT_PRIO 4
-#define VIDEO_PRIO 1
 
 #define DEBUG true
 
@@ -31,6 +24,8 @@
 
 #define FPS 25
 #define MJPEG_BUFFER_SIZE (288 * 250 * 2 / 8)
+
+#define STOP_SIGNAL (-1)
 
 #if DEBUG == true
 #define debug(x) Serial.print(x)
@@ -49,24 +44,24 @@
 #define BUTTON1 10
 #define BUTTON2 12
 
-#define SD_MMC_CLK 3 // 7
-#define SD_MMC_CMD 4 // 15
-#define SD_MMC_D0 2  // 16
-#define SD_MMC_D1 1  // 17
-#define SD_MMC_D2 6  // 18
-#define SD_MMC_D3 5  // 45
+#define SD_MMC_CLK 3
+#define SD_MMC_CMD 4
+#define SD_MMC_D0 2
+#define SD_MMC_D1 1
+#define SD_MMC_D2 6
+#define SD_MMC_D3 5
 
-#define GFX_RST 48  // 42
-#define GFX_BL 42   // 48
-#define GFX_DC 40   // 41
-#define GFX_CS 41   // 10
-#define GFX_SCK 21  // 12
-#define GFX_MOSI 47 // 11
+#define GFX_RST 48
+#define GFX_BL 42
+#define GFX_DC 40
+#define GFX_CS 41
+#define GFX_SCK 21
+#define GFX_MOSI 47
 
 #define I2S_MCLK -1
-#define I2S_BCLK 8 // 5
-#define I2S_LRC 9 // 6
-#define I2S_DOUT 7 // 4
+#define I2S_BCLK 8
+#define I2S_LRC 9
+#define I2S_DOUT 7
 #define I2S_DIN -1
 
 #define CHART_MARGIN 64

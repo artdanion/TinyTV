@@ -6,12 +6,48 @@
 #include <SD_MMC.h>
 #include <Audio.h>
 #include <JPEGDEC.h>
-#include <Arduino_GFX_Library.h>
-#include <memory>
+#include <driver/i2s.h>
+#include <string>
+#include <map>
+#include <vector>
 
-#define NUMBER_OF_DECODE_BUFFER 4
-#define NUMBER_OF_DRAW_BUFFER 24
-#define MAXOUTPUTSIZE (288 / 3 / 16)
+void getFiles();
+void scanDirectory(fs::FS &fs, String dirname, std::map<std::string, std::string> &fileMap);
+void populateVectorsFromMap(const std::map<std::string, std::string> &fileMap, std::vector<String> &videoFiles, std::vector<String> &audioFiles);
+void listFilesByExtension(fs::FS &fs, std::vector<String> &videoFiles, std::vector<String> &audioFiles);
+int drawMCU(JPEGDRAW *pDraw);
+void clearQueues();
+
+// Declare the vectors as extern
+extern std::vector<String> videoFiles;
+extern std::vector<String> audioFiles;
+
+extern int current_video;
+extern int current_audio;
+extern bool isPlaying;
+extern bool isStopping;
+
+extern unsigned long  total_read_video_ms;
+extern unsigned long  total_decode_video_ms;
+extern unsigned long  total_show_video_ms;
+extern unsigned long  total_read_audio_ms;
+extern unsigned long  total_play_audio_ms;
+
+extern struct audioMessage
+{
+  uint8_t cmd;
+  const char *txt;
+  uint32_t value;
+  uint32_t ret;
+} audioTxMessage, audioRxMessage;
+
+enum : uint8_t
+{
+  SET_VOLUME,
+  GET_VOLUME,
+  CONNECTTOHOST,
+  CONNECTTOSD
+};
 
 typedef struct
 {
@@ -21,55 +57,66 @@ typedef struct
 
 typedef struct
 {
-    xQueueHandle xqh;
-    JPEG_DRAW_CALLBACK *drawFunc;
+  xQueueHandle xqh;
+  JPEG_DRAW_CALLBACK *drawFunc;
+  int data;
 } paramDrawTask;
 
 typedef struct
 {
-    xQueueHandle xqh;
-    mjpegBuf *mBuf;
-    JPEG_DRAW_CALLBACK *drawFunc;
+  xQueueHandle xqh;
+  mjpegBuf *mBuf;
+  JPEG_DRAW_CALLBACK *drawFunc;
+  int data;
 } paramDecodeTask;
 
 class VideoPlayer
 {
-private:
-    // Membervariablen für Video-Handling
-    std::unique_ptr<File> _input;
-    size_t _mjpegBufSize;
-    size_t _readBufferSize;
-    std::unique_ptr<uint8_t[]> _read_buf; // Automatische Speicherverwaltung
-    std::unique_ptr<uint8_t[]> _mjpeg_buf;
-    Arduino_GFX *gfx;
-    QueueHandle_t _videoQueue;
-    int _frameIndex;
-    unsigned long _startTime;
-    bool _useBigEndian;
-    JPEGDEC _jpegDec;
-    int32_t _mjpeg_buf_offset;
-    int32_t _inputindex;
-    int32_t _buf_read;
-    int32_t _remain;
-    TaskHandle_t _decodeTask;
-    TaskHandle_t _draw_task;
-    paramDecodeTask _pDecodeTask;
-    paramDrawTask _pDrawTask;
-    uint8_t _mBufIdx;
-    mjpegBuf _mjpegBufs[NUMBER_OF_DECODE_BUFFER];
-    JPEGDRAW jpegdraws[NUMBER_OF_DRAW_BUFFER];
-    static int _draw_queue_cnt;
-    xQueueHandle _xqh;
+public:
+  Player();
+  ~Player();
+  void init();
+  void start(const std::string &videoFile);
+  void stop();
+  void setVolume(int volume);
+  void showStats();
 
-    // Private Hilfsfunktionen
-    bool readFrame();
-    void drawFrame();
-    void decode_task_internal();
-    void draw_task_internal();
-    bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDraw,
-                     bool useBigEndian, BaseType_t decodeAssignCore, BaseType_t drawAssignCore);
-    bool mjpeg_read_frame();
-    bool mjpeg_draw_frame();
+private:
+  File vFile;
+  File aFile;
+  bool vFileOpen;
+  bool aFileOpen;
+  uint64_t start_ms;
+  uint64_t curr_ms;
+  uint64_t next_frame_ms;
+  int next_frame;
+  int skipped_frames;
+  void stopTasks();
+  void clearQueues();
+  void signalStopToQueues();
+  void resetPlaybackState();
+  void freeBuffers();
+  void debug_memory_usage();
+};
+
+// audio functions
+void CreateQueues();
+void audioTask(void *parameter);
+void audioInit();
+audioMessage transmitReceive(audioMessage msg);
+void audioSetVolume(uint8_t vol);
+uint8_t audioGetVolume();
+bool audioConnecttohost(const char *host);
+bool audioConnecttoSD(const char *filename);
+
+// decode and draw task
+int queueDrawMCU(JPEGDRAW *pDraw);
+void decode_task(void *arg);
+void draw_task(void *arg);
+bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDraw,
+                 bool useBigEndian, BaseType_t decodeAssignCore, BaseType_t drawAssignCore);
+bool mjpeg_read_frame();
+bool mjpeg_draw_frame();
 
 public:
     // Konstruktor und Destruktor
