@@ -1,49 +1,57 @@
+/***
+ * based on the project of: https://github.com/galbraithmedia1/Mini-Tv-ESP32
+ *
+ * Changes:
+ *
+ * 2024 artdanion
+ *
+ */
+
+// Version for ESP32-S3 Dev Board with SD_MMC Card
+
+//  Audio and video code
+
+// ffmpeg -i  office1.mp4 -ar 44100 -ac 1 -ab 24k -filter:a loudnorm -filter:a "volume=-5dB" office1.aac
+// ffmpeg -i office1.mp4 -vf "fps=25,scale=-1:240:flags=lanczos,crop=288:in_h:(in_w-288)/2:0" -q:v 11 office1.mjpeg
+
+#include <Arduino.h>
 #include <WiFi.h>
 #include <FS.h>
-#include <SD_MMC.h>
-#include <JPEGDEC.h>
+#include <vector>
+#include <map>
+#include <string>
+#include <esp_log.h>
+#include <esp_task_wdt.h>
+#include <esp_heap_caps.h>
+#include "config.h"
+#include <player.h>
 #include <Audio.h>
-#include <Arduino_GFX_Library.h>
-#include "player.h"
+#include <Button.h>
 
-#define DECODEASSIGNCORE 0
-#define DRAWASSIGNCORE 0
+/* functions */
+void input_task(void *param);
 
-#define READ_BUFFER_SIZE 4096
-#define MAXOUTPUTSIZE (288 / 3 / 16)
-#define NUMBER_OF_DECODE_BUFFER 4
-#define NUMBER_OF_DRAW_BUFFER 24
+bool is_muted = false;
+float volume_level = 0.5; // Startlautstärke
 
-#define FPS 25
-#define MJPEG_BUFFER_SIZE (288 * 250 * 2 / 8)
+unsigned long LeftButtonsMillis = 0;
+unsigned long RightButtonsMillis = 0;
 
-#define GFX_RST 48
-#define GFX_BL 42
-#define GFX_DC 40
-#define GFX_CS 41
-#define GFX_SCK 21
-#define GFX_MOSI 47
+TaskHandle_t inputHandle;
 
-#define SD_MMC_CLK 3
-#define SD_MMC_CMD 4
-#define SD_MMC_D0 2
-#define SD_MMC_D1 1
-#define SD_MMC_D2 6
-#define SD_MMC_D3 5
+Button LeftButton(BUTTON1);
+Button RightButton(BUTTON2);
 
-Arduino_DataBus *bus = new Arduino_ESP32SPIDMA(GFX_DC, GFX_CS, GFX_SCK, GFX_MOSI, GFX_NOT_DEFINED, HSPI, false);
-Arduino_GFX *gfx = new Arduino_ST7789(bus, GFX_RST, 1 /* rotation */, true /* IPS */, 240 /* width */, 288 /* height */, 0 /* col offset 1 */, 20 /* row offset 1 */, 0 /* col offset 2 */, 12 /* row offset 2 */);
+Player player;
 
-VideoPlayer *videoPlayer;
+void setup()
+{
+  disableCore0WDT();
+  disableCore1WDT();
 
-void videoTask(void *param) {
-  videoPlayer->task();
-}
-
-void setup() {
   WiFi.mode(WIFI_OFF);
 
-  Serial.setTxTimeoutMs(5);  // set USB CDC Time TX
+  Serial.setTxTimeoutMs(5); // set USB CDC Time TX
   Serial.begin(115200);
 
   delay(5000);
@@ -94,7 +102,8 @@ void input_task(void *param)
       //   current_audio = 0;
 
       player.stop();
-     
+      delay(100);
+      
       debugln("Starting player");
       debugln("next Video");
       player.start(videoFiles[current_video].c_str());

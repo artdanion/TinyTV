@@ -11,8 +11,8 @@
 */
 
 #define AUDIOASSIGNCORE 1
-// #define DECODEASSIGNCORE 0
-// #define DRAWASSIGNCORE 0
+#define DECODEASSIGNCORE 0
+#define DRAWASSIGNCORE 0
 #define INPUTASSIGNCORE 1
 
 #define DEBUG true

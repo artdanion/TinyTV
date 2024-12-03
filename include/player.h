@@ -1,9 +1,9 @@
-#ifndef VIDEO_PLAYER_H
-#define VIDEO_PLAYER_H
+#ifndef PLAYER_H
+#define PLAYER_H
 
 #include <Arduino.h>
+#include <config.h>
 #include <FS.h>
-#include <SD_MMC.h>
 #include <Audio.h>
 #include <JPEGDEC.h>
 #include <driver/i2s.h>
@@ -11,12 +11,17 @@
 #include <map>
 #include <vector>
 
+#define READ_BUFFER_SIZE 4096
+#define MAXOUTPUTSIZE (288 / 3 / 16)
+#define NUMBER_OF_DECODE_BUFFER 4
+#define NUMBER_OF_DRAW_BUFFER 24
+
 void getFiles();
 void scanDirectory(fs::FS &fs, String dirname, std::map<std::string, std::string> &fileMap);
 void populateVectorsFromMap(const std::map<std::string, std::string> &fileMap, std::vector<String> &videoFiles, std::vector<String> &audioFiles);
 void listFilesByExtension(fs::FS &fs, std::vector<String> &videoFiles, std::vector<String> &audioFiles);
 int drawMCU(JPEGDRAW *pDraw);
-void clearQueues();
+void showStats();
 
 // Declare the vectors as extern
 extern std::vector<String> videoFiles;
@@ -24,14 +29,14 @@ extern std::vector<String> audioFiles;
 
 extern int current_video;
 extern int current_audio;
-extern bool isPlaying;
 extern bool isStopping;
+extern bool isPlaying;
 
-extern unsigned long  total_read_video_ms;
-extern unsigned long  total_decode_video_ms;
-extern unsigned long  total_show_video_ms;
-extern unsigned long  total_read_audio_ms;
-extern unsigned long  total_play_audio_ms;
+extern unsigned long total_read_video_ms;
+extern unsigned long total_decode_video_ms;
+extern unsigned long total_show_video_ms;
+extern unsigned long total_read_audio_ms;
+extern unsigned long total_play_audio_ms;
 
 extern struct audioMessage
 {
@@ -51,15 +56,13 @@ enum : uint8_t
 
 typedef struct
 {
-    int32_t size;
-    std::unique_ptr<uint8_t[]> buf;
+  int32_t size;
+  uint8_t *buf;
 } mjpegBuf;
-
 typedef struct
 {
   xQueueHandle xqh;
   JPEG_DRAW_CALLBACK *drawFunc;
-  int data;
 } paramDrawTask;
 
 typedef struct
@@ -67,14 +70,12 @@ typedef struct
   xQueueHandle xqh;
   mjpegBuf *mBuf;
   JPEG_DRAW_CALLBACK *drawFunc;
-  int data;
 } paramDecodeTask;
 
-class VideoPlayer
+class Player
 {
 public:
   Player();
-  ~Player();
   void init();
   void start(const std::string &videoFile);
   void stop();
@@ -93,9 +94,7 @@ private:
   int skipped_frames;
   void stopTasks();
   void clearQueues();
-  void signalStopToQueues();
   void resetPlaybackState();
-  void freeBuffers();
   void debug_memory_usage();
 };
 
@@ -118,26 +117,4 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
 bool mjpeg_read_frame();
 bool mjpeg_draw_frame();
 
-public:
-    // Konstruktor und Destruktor
-    VideoPlayer(Arduino_GFX *gfxInstance, size_t mjpegBufferSize, size_t readBufferSize);
-    ~VideoPlayer();
-
-    // Öffentliche Methoden
-    void init();
-    void play(const char *filename);
-    void stop();
-    void task();
-    int drawMCU(JPEGDRAW *pDraw);
-    int queueDrawMCU(JPEGDRAW *pDraw);
-    static VideoPlayer *instance;
-
-    // Statische Wrapper-Funktionen
-    static void decode_task(void *arg);
-    static void draw_task(void *arg);
-};
-
-int drawMCU_wrapper(JPEGDRAW *pDraw);
-int queueDrawMCU_wrapper(JPEGDRAW *pDraw);
-
-#endif // VIDEO_PLAYER_H
+#endif
