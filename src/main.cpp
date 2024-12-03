@@ -37,6 +37,9 @@ float volume_level = 0.5; // Startlautstärke
 unsigned long LeftButtonsMillis = 0;
 unsigned long RightButtonsMillis = 0;
 
+unsigned long previousMillis = 0;
+const long interval = 1000;
+
 TaskHandle_t inputHandle;
 
 Button LeftButton(BUTTON1);
@@ -76,6 +79,9 @@ void setup()
   current_video++;
   current_audio++;
 
+  current_video++;
+  current_audio++;
+  
   player.start(videoFiles[current_video].c_str());
   player.setVolume(15);
 }
@@ -87,6 +93,7 @@ void loop()
 
 void input_task(void *param)
 {
+  debugln("---->input_task start");
   for (;;)
   {
     if (LeftButton.pressed())
@@ -103,7 +110,7 @@ void input_task(void *param)
 
       player.stop();
       delay(100);
-      
+
       debugln("Starting player");
       debugln("next Video");
       player.start(videoFiles[current_video].c_str());
@@ -123,6 +130,8 @@ void input_task(void *param)
         player.setVolume(15);
       LeftButtonsMillis = 0;
     }
+    unsigned long currentMillis = millis();
+
     vTaskDelay(pdMS_TO_TICKS(20)); // Delay for 20 milliseconds
   }
 }

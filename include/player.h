@@ -87,11 +87,16 @@ private:
   File aFile;
   bool vFileOpen;
   bool aFileOpen;
+  uint64_t time_used;
   uint64_t start_ms;
   uint64_t curr_ms;
   uint64_t next_frame_ms;
+  uint64_t waitTime;
   int next_frame;
+  int total_frames;
   int skipped_frames;
+  int played_frames;
+  float fps;
   void stopTasks();
   void clearQueues();
   void resetPlaybackState();

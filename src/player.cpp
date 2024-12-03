@@ -81,8 +81,13 @@ Player::Player() : vFileOpen(false),
                    start_ms(0),
                    curr_ms(0),
                    next_frame_ms(0),
+                   time_used(0),
+                   waitTime(0),
                    next_frame(0),
-                   skipped_frames(0) {}
+                   skipped_frames(0),
+                   total_frames(0),
+                   played_frames(0),
+                   fps(0.0) {}
 
 void Player::init()
 {
@@ -128,6 +133,7 @@ void Player::start(const std::string &videoFile)
 
   // Ensure the current playback is stopped
   // stop();
+  long waitTime = 0;
 
   uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
   debugf("SD Card Size: %lluMB\n", cardSize);
@@ -167,37 +173,59 @@ void Player::start(const std::string &videoFile)
 
     start_ms = millis();
     curr_ms = millis();
-    next_frame_ms = start_ms + (1000 / FPS); // Calculate the time for the next frame
-    next_frame = 1;                          // Start with the first frame
+    int factor = 1000 / FPS;
 
-    while (vFile.available() && mjpeg_read_frame())
-    { // Read video
+    // Initialisiere die Zeit für das nächste Frame basierend auf der aktuellen Zeit
+    unsigned long next_frame_ms = curr_ms + factor;
+    next_frame = 1;
+
+    while (vFile.available() && mjpeg_read_frame()) // Read video
+    {
+      // Aktualisiere die aktuelle Zeit
       total_read_video_ms += millis() - curr_ms;
       curr_ms = millis();
 
-      if (millis() < next_frame_ms)
-      { // check show frame or skip frame
-        // Play video
+      // Prüfe, ob das aktuelle Frame gezeichnet werden kann
+      if (curr_ms < next_frame_ms)
+      {
+        // Zeichne das Frame
         mjpeg_draw_frame();
         total_decode_video_ms += millis() - curr_ms;
-        curr_ms = millis();
       }
       else
       {
+        // Frame wird übersprungen, weil wir hinterherhinken
         ++skipped_frames;
+        Serial.println("Skip frame");
       }
 
-      // Wait until it's time for the next frame
-      while (millis() < next_frame_ms)
+      // Dynamische Anpassung: Stelle sicher, dass wir nicht zu weit vom Zeitplan abweichen
+      if (curr_ms > next_frame_ms)
       {
-        vTaskDelay(pdMS_TO_TICKS(1));
+        // Hole auf: Setze die nächste Frame-Zeit basierend auf der aktuellen Zeit
+        next_frame_ms = curr_ms + factor;
+        next_frame++;
       }
+      else
+      {
+        // Warte bis zum nächsten Frame
+        while (millis() < next_frame_ms)
+        {
+          waitTime++;
+          vTaskDelay(pdMS_TO_TICKS(1)); // Geringfügige Pause, um CPU-Last zu reduzieren
+        }
 
-      curr_ms = millis();
-      next_frame_ms = curr_ms + (1000 / FPS); // Calculate the time for the next frame
-      ++next_frame;                           // Increment the frame counter
+        // Aktualisiere die Zeit für das nächste Frame
+        next_frame_ms += factor;
+        next_frame++;
+      }
     }
     debugln("AV end");
+
+    time_used = millis() - start_ms;
+    total_frames = next_frame - 1;
+    played_frames = total_frames - skipped_frames;
+    fps = 1000.0 * played_frames / time_used;
     total_play_audio_ms = audio.getTotalPlayingTime();
     audio.stopSong();
     showStats();
@@ -284,11 +312,11 @@ void Player::showStats()
 {
   gfx->fillScreen(BLACK);
 
-  int time_used = millis() - start_ms;
-  int total_frames = next_frame - 1;
+  // int time_used = millis() - start_ms;
+  // int total_frames = next_frame - 1;
 
-  int played_frames = total_frames - skipped_frames;
-  float fps = 1000.0 * played_frames / time_used;
+  // int played_frames = total_frames - skipped_frames;
+  // float fps = 1000.0 * played_frames / time_used;
 
   debugln("Show Stats");
 
@@ -301,6 +329,7 @@ void Player::showStats()
   debugf("Read video: %lu ms (%0.1f %%)\n", total_read_video_ms, 100.0 * total_read_video_ms / time_used);
   debugf("Decode video: %lu ms (%0.1f %%)\n", total_decode_video_ms, 100.0 * total_decode_video_ms / time_used);
   debugf("Show video: %lu ms (%0.1f %%)\n", total_show_video_ms, 100.0 * total_show_video_ms / time_used);
+  debugf("Wait Time: %lu ms\n", waitTime);
 
   gfx->setCursor(0, 50);
   gfx->setTextColor(WHITE);
@@ -368,6 +397,9 @@ void Player::showStats()
   gfx->setTextColor(LEGEND_D_COLOR);
   gfx->printf("Show video: %lu ms (%0.1f %%)\n", total_show_video_ms, 100.0 * total_show_video_ms / time_used);
   delay(50);
+  gfx->setTextColor(LEGEND_D_COLOR);
+  gfx->printf("Wait Time: %lu ms\n", waitTime);
+  delay(50);
 
   float arc_start5 = 0;
   float arc_end5 = arc_start5 + max(2.0, 360.0 * total_decode_video_ms / time_used);
@@ -413,11 +445,10 @@ int queueDrawMCU(JPEGDRAW *pDraw)
   j->iHeight = pDraw->iHeight;
   memcpy(j->pPixels, pDraw->pPixels, len);
 
-  // log_i("queueDrawMCU start.");
+  // debugln("queueDrawMCU start.");
   ++_draw_queue_cnt;
   xQueueSend(_xqh, &j, portMAX_DELAY);
-  // log_i("queueDrawMCU end.");
-
+  // debugln("queueDrawMCU end.");
   return 1;
 }
 
@@ -428,15 +459,12 @@ void decode_task(void *arg)
   debugln("---->decode_task start");
   while (xQueueReceive(p->xqh, &mBuf, portMAX_DELAY))
   {
-    if (isStopping)
-      break;
     // log_i("mBuf->size: %d", mBuf->size);
     // log_i("mBuf->buf start: %X %X, end: %X, %X.", mBuf->buf[0], mBuf->buf[1], mBuf->buf[mBuf->size - 2], mBuf->buf[mBuf->size - 1]);
     unsigned long s = millis();
 
     _jpegDec.openRAM(mBuf->buf, mBuf->size, p->drawFunc);
 
-    // _jpegDec.setMaxOutputSize(MAXOUTPUTSIZE);
     if (_useBigEndian)
     {
       _jpegDec.setPixelType(RGB565_BIG_ENDIAN);
@@ -462,12 +490,9 @@ void draw_task(void *arg)
 
   while (xQueueReceive(p->xqh, &pDraw, portMAX_DELAY))
   {
-    if (isStopping)
-      break;
-
-    // log_i("draw_task work start: x: %d, y: %d, iWidth: %d, iHeight: %d.", pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight);
+    // debugf("draw_task work start: x: %d, y: %d, iWidth: %d, iHeight: %d.", pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight);
     p->drawFunc(pDraw);
-    // log_i("draw_task work end.");
+    // debugln("draw_task work end.");
   }
   vQueueDelete(p->xqh);
   debugln("---->draw_task end");
@@ -516,7 +541,7 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
   xTaskCreatePinnedToCore(
       (TaskFunction_t)decode_task,
       (const char *const)"MJPEG decode Task",
-      (const uint32_t)2000,
+      (const uint32_t)4000,
       (void *const)&_pDecodeTask,
       (UBaseType_t)configMAX_PRIORITIES - 1,
       (TaskHandle_t *const)&_decodeTask,
@@ -524,7 +549,7 @@ bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDra
   xTaskCreatePinnedToCore(
       (TaskFunction_t)draw_task,
       (const char *const)"MJPEG Draw Task",
-      (const uint32_t)2000,
+      (const uint32_t)4000,
       (void *const)&_pDrawTask,
       (UBaseType_t)configMAX_PRIORITIES - 1,
       (TaskHandle_t *const)&_drawTask,
