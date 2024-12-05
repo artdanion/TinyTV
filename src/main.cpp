@@ -83,7 +83,7 @@ void setup()
   current_audio++;
   
   player.start(videoFiles[current_video].c_str());
-  player.setVolume(15);
+  player.setVolume(20);
 }
 
 void loop()

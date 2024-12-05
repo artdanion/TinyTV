@@ -179,6 +179,8 @@ void Player::start(const std::string &videoFile)
     unsigned long next_frame_ms = curr_ms + factor;
     next_frame = 1;
 
+    bool test=true;
+
     while (vFile.available() && mjpeg_read_frame()) // Read video
     {
       // Aktualisiere die aktuelle Zeit
@@ -188,8 +190,12 @@ void Player::start(const std::string &videoFile)
       // Prüfe, ob das aktuelle Frame gezeichnet werden kann
       if (curr_ms < next_frame_ms)
       {
+        if(test)
+        {
         // Zeichne das Frame
         mjpeg_draw_frame();
+        //test=false;
+        }
         total_decode_video_ms += millis() - curr_ms;
       }
       else
@@ -724,7 +730,7 @@ void audioTask(void *parameter)
   struct audioMessage audioTxTaskMessage;
 
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  audio.setVolume(15); // 0...21
+  audio.setVolume(5); // 0...21
 
   while (true)
   {
