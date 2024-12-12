@@ -100,6 +100,8 @@ private:
 
   /* video task*/
   JPEGDEC _jpegDec;
+  JPEGDRAW jpegdraws[NUMBER_OF_DRAW_BUFFER];
+  xQueueHandle _xqh;
   bool _useBigEndian;
   int _draw_queue_cnt;
 

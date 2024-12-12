@@ -22,10 +22,6 @@ int current_audio = 0;
 bool isStopping = false;
 bool isPlaying = false;
 
-JPEGDRAW jpegdraws[NUMBER_OF_DRAW_BUFFER];
-int _draw_queue_cnt;
-xQueueHandle _xqh;
-
 /* audio task*/
 TaskHandle_t _audioTask;
 QueueHandle_t audioSetQueue = NULL;
