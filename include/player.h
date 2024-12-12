@@ -20,7 +20,6 @@ void getFiles();
 void scanDirectory(fs::FS &fs, String dirname, std::map<std::string, std::string> &fileMap);
 void populateVectorsFromMap(const std::map<std::string, std::string> &fileMap, std::vector<String> &videoFiles, std::vector<String> &audioFiles);
 void listFilesByExtension(fs::FS &fs, std::vector<String> &videoFiles, std::vector<String> &audioFiles);
-int drawMCU(JPEGDRAW *pDraw);
 void showStats();
 
 // Declare the vectors as extern
