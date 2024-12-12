@@ -255,6 +255,7 @@ void Player::stop()
   if (!isPlaying)
     return; // Do nothing if not playing
 
+
   // Signal tasks to stop
   stopTasks();
 
