@@ -97,11 +97,58 @@ private:
   int skipped_frames;
   int played_frames;
   float fps;
+
+  /* video task*/
+  JPEGDEC _jpegDec;
+  bool _useBigEndian;
+  int _draw_queue_cnt;
+
+  unsigned long total_read_video_ms;
+  unsigned long total_decode_video_ms;
+  unsigned long total_show_video_ms;
+
+  Stream *_input;
+  int32_t _mjpegBufSize;
+  uint8_t *_read_buf;
+  int32_t _mjpeg_buf_offset;
+
+  TaskHandle_t _decodeTask;
+  TaskHandle_t _drawTask;
+  paramDecodeTask _pDecodeTask;
+  paramDrawTask _pDrawTask;
+  uint8_t *_mjpeg_buf;
+  uint8_t _mBufIdx;
+
+  int32_t _inputindex;
+  int32_t _buf_read;
+  int32_t _remain;
+  mjpegBuf _mjpegBufs[NUMBER_OF_DECODE_BUFFER];
+
   void stopTasks();
   void clearQueues();
   void resetPlaybackState();
   void debug_memory_usage();
+
+  // decode and draw task
+  int drawMCU(JPEGDRAW *pDraw);
+  int queueDrawMCU(JPEGDRAW *pDraw);
+
+  bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDraw,
+                   bool useBigEndian, BaseType_t decodeAssignCore, BaseType_t drawAssignCore);
+  bool mjpeg_read_frame();
+  bool mjpeg_draw_frame();
+  void decode_task(void);
+  void draw_task(void);
+
+  friend void decode_static_task(void *parameter);
+  friend void draw_static_task(void *parameter);
+
+  friend int drawMCU_static(JPEGDRAW *pDraw);
+  friend int queueDrawMCU_static(JPEGDRAW *pDraw);
 };
+
+int drawMCU_static(JPEGDRAW *pDraw);
+int queueDrawMCU_static(JPEGDRAW *pDraw);
 
 // audio functions
 void CreateQueues();
@@ -112,14 +159,5 @@ void audioSetVolume(uint8_t vol);
 uint8_t audioGetVolume();
 bool audioConnecttohost(const char *host);
 bool audioConnecttoSD(const char *filename);
-
-// decode and draw task
-int queueDrawMCU(JPEGDRAW *pDraw);
-void decode_task(void *arg);
-void draw_task(void *arg);
-bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDraw,
-                 bool useBigEndian, BaseType_t decodeAssignCore, BaseType_t drawAssignCore);
-bool mjpeg_read_frame();
-bool mjpeg_draw_frame();
 
 #endif
