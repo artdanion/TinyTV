@@ -117,11 +117,11 @@ void Player::init()
   getFiles();
 
   // Initialize tasks and buffers using mjpeg_setup
-  if (!mjpeg_setup(&vFile, MJPEG_BUFFER_SIZE, drawMCU, false /* useBigEndian */, DECODEASSIGNCORE, DRAWASSIGNCORE))
-  {
-    debugln("ERROR: Failed to initialize MJPEG setup");
-    return;
-  }
+  // if (!mjpeg_setup(&vFile, MJPEG_BUFFER_SIZE, drawMCU, false /* useBigEndian */, DECODEASSIGNCORE, DRAWASSIGNCORE))
+  // {
+  //   debugln("ERROR: Failed to initialize MJPEG setup");
+  //   return;
+  // }
 
   audioInit();
 }
@@ -152,6 +152,15 @@ void Player::start(const std::string &videoFile)
   {
     debugln("Init video");
 
+        isPlaying = true;
+
+          // Initialize tasks and buffers using mjpeg_setup
+  if (!mjpeg_setup(&vFile, MJPEG_BUFFER_SIZE, drawMCU, false /* useBigEndian */, DECODEASSIGNCORE, DRAWASSIGNCORE))
+  {
+    debugln("ERROR: Failed to initialize MJPEG setup");
+    return;
+  }
+
     // Reinitialize the video setup with the new stream
     _input = &vFile;                       // Update the input stream
     _mjpeg_buf = _mjpegBufs[_mBufIdx].buf; // Reset the buffer pointer
@@ -179,7 +188,6 @@ void Player::start(const std::string &videoFile)
     unsigned long next_frame_ms = curr_ms + factor;
     next_frame = 1;
 
-    bool test=true;
 
     while (vFile.available() && mjpeg_read_frame()) // Read video
     {
@@ -190,12 +198,7 @@ void Player::start(const std::string &videoFile)
       // Prüfe, ob das aktuelle Frame gezeichnet werden kann
       if (curr_ms < next_frame_ms)
       {
-        if(test)
-        {
-        // Zeichne das Frame
         mjpeg_draw_frame();
-        //test=false;
-        }
         total_decode_video_ms += millis() - curr_ms;
       }
       else
@@ -255,7 +258,6 @@ void Player::stop()
   if (!isPlaying)
     return; // Do nothing if not playing
 
-
   // Signal tasks to stop
   stopTasks();
 
@@ -281,7 +283,7 @@ void Player::stop()
 
 void Player::stopTasks()
 {
-  isStopping = true; // Signal the tasks to stop processing
+  isPlaying=false;
 
   // Wait briefly to ensure tasks have finished
   vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -464,23 +466,26 @@ void decode_task(void *arg)
   paramDecodeTask *p = (paramDecodeTask *)arg;
   mjpegBuf *mBuf;
   debugln("---->decode_task start");
-  while (xQueueReceive(p->xqh, &mBuf, portMAX_DELAY))
+  while (isPlaying)
   {
-    // log_i("mBuf->size: %d", mBuf->size);
-    // log_i("mBuf->buf start: %X %X, end: %X, %X.", mBuf->buf[0], mBuf->buf[1], mBuf->buf[mBuf->size - 2], mBuf->buf[mBuf->size - 1]);
-    unsigned long s = millis();
-
-    _jpegDec.openRAM(mBuf->buf, mBuf->size, p->drawFunc);
-
-    if (_useBigEndian)
+    while (xQueueReceive(p->xqh, &mBuf, portMAX_DELAY))
     {
-      _jpegDec.setPixelType(RGB565_BIG_ENDIAN);
-    }
-    _jpegDec.setMaxOutputSize(MAXOUTPUTSIZE);
-    _jpegDec.decode(0, 0, 0);
-    _jpegDec.close();
+      // log_i("mBuf->size: %d", mBuf->size);
+      // log_i("mBuf->buf start: %X %X, end: %X, %X.", mBuf->buf[0], mBuf->buf[1], mBuf->buf[mBuf->size - 2], mBuf->buf[mBuf->size - 1]);
+      unsigned long s = millis();
 
-    total_decode_video_ms += millis() - s;
+      _jpegDec.openRAM(mBuf->buf, mBuf->size, p->drawFunc);
+
+      if (_useBigEndian)
+      {
+        _jpegDec.setPixelType(RGB565_BIG_ENDIAN);
+      }
+      _jpegDec.setMaxOutputSize(MAXOUTPUTSIZE);
+      _jpegDec.decode(0, 0, 0);
+      _jpegDec.close();
+
+      total_decode_video_ms += millis() - s;
+    }
   }
   vQueueDelete(p->xqh);
   debugln("----> decode_task end");
@@ -494,18 +499,20 @@ void draw_task(void *arg)
   paramDrawTask *p = (paramDrawTask *)arg;
   JPEGDRAW *pDraw;
   debugln("---->draw_task start");
-
-  while (xQueueReceive(p->xqh, &pDraw, portMAX_DELAY))
+  while (isPlaying)
   {
-    // debugf("draw_task work start: x: %d, y: %d, iWidth: %d, iHeight: %d.", pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight);
-    p->drawFunc(pDraw);
-    // debugln("draw_task work end.");
+    while (xQueueReceive(p->xqh, &pDraw, portMAX_DELAY))
+    {
+      // debugf("draw_task work start: x: %d, y: %d, iWidth: %d, iHeight: %d.", pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight);
+      p->drawFunc(pDraw);
+      // debugln("draw_task work end.");
+    }
+    vQueueDelete(p->xqh);
+    debugln("---->draw_task end");
+    isStopping = false;
+    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelete(NULL);
   }
-  vQueueDelete(p->xqh);
-  debugln("---->draw_task end");
-  isStopping = false;
-  vTaskDelay(pdMS_TO_TICKS(20));
-  vTaskDelete(NULL);
 }
 
 bool mjpeg_setup(Stream *input, int32_t mjpegBufSize, JPEG_DRAW_CALLBACK *pfnDraw,
